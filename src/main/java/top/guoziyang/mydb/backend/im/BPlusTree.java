@@ -62,6 +62,12 @@ public class BPlusTree {
         }
     }
 
+    /**
+     * 从任意一个节点 uid 出发，沿着 B+ 树往下找到包含指定 key 的叶子节点 uid
+     * @param nodeUid 任意一个非叶子节点
+     * @param key 要查找的 key
+     * @return 叶子节点的 uid
+     */
     private long searchLeaf(long nodeUid, long key) throws Exception {
         Node node = Node.loadNode(this, nodeUid);
         boolean isLeaf = node.isLeaf();
@@ -75,6 +81,12 @@ public class BPlusTree {
         }
     }
 
+    /**
+     * 找到第一个大于等于 key 的节点 uid
+     * @param nodeUid 任意一个非叶子节点
+     * @param key 要查找的 key
+     * @return 找到的节点 uid
+     */
     private long searchNext(long nodeUid, long key) throws Exception {
         while(true) {
             Node node = Node.loadNode(this, nodeUid);
@@ -85,10 +97,21 @@ public class BPlusTree {
         }
     }
 
+    /**
+     * 查找值等等于 key 的所有 uid
+     * @param key 要查找的 key
+     * @return 找到的节点 uid
+     */
     public List<Long> search(long key) throws Exception {
         return searchRange(key, key);
     }
 
+    /**
+     * 找到所有 key 的范围在 [leftKey, rightKey] 的 uid
+     * @param leftKey 范围左边界
+     * @param rightKey 范围右边界
+     * @return 找到的节点 uid
+     */
     public List<Long> searchRange(long leftKey, long rightKey) throws Exception {
         long rootUid = rootUid();
         long leafUid = searchLeaf(rootUid, leftKey);

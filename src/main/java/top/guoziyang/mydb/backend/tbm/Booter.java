@@ -19,7 +19,7 @@ public class Booter {
 
     public static Booter create(String path) {
         removeBadTmp(path);
-        File f = new File(path+BOOTER_SUFFIX);
+        File f = new File(path + BOOTER_SUFFIX);
         try {
             if(!f.createNewFile()) {
                 Panic.panic(Error.FileExistsException);
@@ -52,6 +52,10 @@ public class Booter {
     private Booter(String path, File file) {
         this.path = path;
         this.file = file;
+    }
+
+    public String getPath() {
+        return path;
     }
 
     public byte[] load() {

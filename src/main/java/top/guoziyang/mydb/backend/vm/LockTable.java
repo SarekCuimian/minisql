@@ -19,7 +19,7 @@ public class LockTable {
     private Map<Long, Long> u2x;        // UID被某个XID持有
     private Map<Long, List<Long>> wait; // 正在等待UID的XID列表
     private Map<Long, Lock> waitLock;   // 正在等待资源的XID的锁
-    private Map<Long, Long> waitU;      // XID正在等待的UID
+    private Map<Long, Long> waitUid;      // XID正在等待的UID
     private Lock lock;
 
     public LockTable() {
@@ -27,7 +27,7 @@ public class LockTable {
         u2x = new HashMap<>();
         wait = new HashMap<>();
         waitLock = new HashMap<>();
-        waitU = new HashMap<>();
+        waitUid = new HashMap<>();
         lock = new ReentrantLock();
     }
 
@@ -44,11 +44,11 @@ public class LockTable {
                 putIntoList(x2u, xid, uid);
                 return null;
             }
-            waitU.put(xid, uid);
+            waitUid.put(xid, uid);
             //putIntoList(wait, xid, uid);
             putIntoList(wait, uid, xid);
             if(hasDeadLock()) {
-                waitU.remove(xid);
+                waitUid.remove(xid);
                 removeFromList(wait, uid, xid);
                 throw Error.DeadlockException;
             }
@@ -72,7 +72,7 @@ public class LockTable {
                     selectNewXID(uid);
                 }
             }
-            waitU.remove(xid);
+            waitUid.remove(xid);
             x2u.remove(xid);
             waitLock.remove(xid);
 
@@ -95,7 +95,7 @@ public class LockTable {
             } else {
                 u2x.put(uid, xid);
                 Lock lo = waitLock.remove(xid);
-                waitU.remove(xid);
+                waitUid.remove(xid);
                 lo.unlock();
                 break;
             }
@@ -133,7 +133,7 @@ public class LockTable {
         }
         xidStamp.put(xid, stamp);
 
-        Long uid = waitU.get(xid);
+        Long uid = waitUid.get(xid);
         if(uid == null) return false;
         Long x = u2x.get(uid);
         assert x != null;

@@ -16,7 +16,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
 
     TransactionManager tm;
     DataManager dm;
-    Map<Long, Transaction> activeTransaction;
+    Map<Long, Transaction> activeTransactionMap;
     Lock lock;
     LockTable lt;
 
@@ -24,8 +24,12 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
         super(0);
         this.tm = tm;
         this.dm = dm;
-        this.activeTransaction = new HashMap<>();
-        activeTransaction.put(TransactionManagerImpl.SUPER_XID, Transaction.newTransaction(TransactionManagerImpl.SUPER_XID, 0, null));
+        this.activeTransactionMap = new HashMap<>();
+        // 创建超级事务 xid = 0
+        activeTransactionMap.put(
+                TransactionManagerImpl.SUPER_XID,
+                Transaction.newTransaction(TransactionManagerImpl.SUPER_XID, IsolationLevel.READ_COMMITTED, null)
+        );
         this.lock = new ReentrantLock();
         this.lt = new LockTable();
     }
@@ -33,7 +37,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     @Override
     public byte[] read(long xid, long uid) throws Exception {
         lock.lock();
-        Transaction t = activeTransaction.get(xid);
+        Transaction t = activeTransactionMap.get(xid);
         lock.unlock();
 
         if(t.err != null) {
@@ -64,7 +68,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     @Override
     public long insert(long xid, byte[] data) throws Exception {
         lock.lock();
-        Transaction t = activeTransaction.get(xid);
+        Transaction t = activeTransactionMap.get(xid);
         lock.unlock();
 
         if(t.err != null) {
@@ -78,7 +82,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     @Override
     public boolean delete(long xid, long uid) throws Exception {
         lock.lock();
-        Transaction t = activeTransaction.get(xid);
+        Transaction t = activeTransactionMap.get(xid);
         lock.unlock();
 
         if(t.err != null) {
@@ -122,7 +126,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
                 t.autoAborted = true;
                 throw t.err;
             }
-
+            // 设置xmax为当前事务xid
             entry.setXmax(xid);
             return true;
 
@@ -132,12 +136,13 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     }
 
     @Override
-    public long begin(int level) {
+    public long begin(IsolationLevel level) {
         lock.lock();
         try {
+            // 开启事务，获取xid
             long xid = tm.begin();
-            Transaction t = Transaction.newTransaction(xid, level, activeTransaction);
-            activeTransaction.put(xid, t);
+            Transaction t = Transaction.newTransaction(xid, level, activeTransactionMap);
+            activeTransactionMap.put(xid, t);
             return xid;
         } finally {
             lock.unlock();
@@ -147,7 +152,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     @Override
     public void commit(long xid) throws Exception {
         lock.lock();
-        Transaction t = activeTransaction.get(xid);
+        Transaction t = activeTransactionMap.get(xid);
         lock.unlock();
 
         try {
@@ -156,12 +161,12 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
             }
         } catch(NullPointerException n) {
             System.out.println(xid);
-            System.out.println(activeTransaction.keySet());
+            System.out.println(activeTransactionMap.keySet());
             Panic.panic(n);
         }
 
         lock.lock();
-        activeTransaction.remove(xid);
+        activeTransactionMap.remove(xid);
         lock.unlock();
 
         lt.remove(xid);
@@ -175,9 +180,9 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
 
     private void internAbort(long xid, boolean autoAborted) {
         lock.lock();
-        Transaction t = activeTransaction.get(xid);
+        Transaction t = activeTransactionMap.get(xid);
         if(!autoAborted) {
-            activeTransaction.remove(xid);
+            activeTransactionMap.remove(xid);
         }
         lock.unlock();
 

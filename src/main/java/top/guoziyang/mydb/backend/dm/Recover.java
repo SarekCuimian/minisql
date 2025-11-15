@@ -68,16 +68,16 @@ public class Recover {
         pc.truncateByBgno(maxPgno);
         System.out.println("Truncate to " + maxPgno + " pages.");
 
-        redoTranscations(tm, lg, pc);
+        redoTransactions(tm, lg, pc);
         System.out.println("Redo Transactions Over.");
 
-        undoTranscations(tm, lg, pc);
+        undoTransactions(tm, lg, pc);
         System.out.println("Undo Transactions Over.");
 
         System.out.println("Recovery Over.");
     }
 
-    private static void redoTranscations(TransactionManager tm, Logger lg, PageCache pc) {
+    private static void redoTransactions(TransactionManager tm, Logger lg, PageCache pc) {
         lg.rewind();
         while(true) {
             byte[] log = lg.next();
@@ -98,7 +98,7 @@ public class Recover {
         }
     }
 
-    private static void undoTranscations(TransactionManager tm, Logger lg, PageCache pc) {
+    private static void undoTransactions(TransactionManager tm, Logger lg, PageCache pc) {
         Map<Long, List<byte[]>> logCache = new HashMap<>();
         lg.rewind();
         while(true) {
@@ -150,12 +150,12 @@ public class Recover {
     private static final int OF_UPDATE_UID = OF_XID+8;
     private static final int OF_UPDATE_RAW = OF_UPDATE_UID+8;
 
-    public static byte[] updateLog(long xid, DataItem di) {
+    public static byte[] updateLog(long xid, DataItem dataItem) {
         byte[] logType = {LOG_TYPE_UPDATE};
         byte[] xidRaw = Parser.long2Byte(xid);
-        byte[] uidRaw = Parser.long2Byte(di.getUid());
-        byte[] oldRaw = di.getOldRaw();
-        SubArray raw = di.getRaw();
+        byte[] uidRaw = Parser.long2Byte(dataItem.getUid());
+        byte[] oldRaw = dataItem.getOldRaw();
+        SubArray raw = dataItem.getRaw();
         byte[] newRaw = Arrays.copyOfRange(raw.raw, raw.start, raw.end);
         return Bytes.concat(logType, xidRaw, uidRaw, oldRaw, newRaw);
     }

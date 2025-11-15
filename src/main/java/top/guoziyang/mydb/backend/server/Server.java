@@ -8,7 +8,8 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-import top.guoziyang.mydb.backend.tbm.TableManager;
+import top.guoziyang.mydb.backend.utils.format.ExecResult;
+import top.guoziyang.mydb.backend.utils.format.ExecResultCodec;
 import top.guoziyang.mydb.transport.Encoder;
 import top.guoziyang.mydb.transport.Package;
 import top.guoziyang.mydb.transport.Packager;
@@ -16,11 +17,11 @@ import top.guoziyang.mydb.transport.Transporter;
 
 public class Server {
     private int port;
-    TableManager tbm;
+    private final DatabaseProvider databaseProvider;
 
-    public Server(int port, TableManager tbm) {
+    public Server(int port, DatabaseProvider databaseProvider) {
         this.port = port;
-        this.tbm = tbm;
+        this.databaseProvider = databaseProvider;
     }
 
     public void start() {
@@ -36,8 +37,8 @@ public class Server {
         try {
             while(true) {
                 Socket socket = ss.accept();
-                Runnable worker = new HandleSocket(socket, tbm);
-                tpe.execute(worker);
+                Runnable handleSocket = new HandleSocket(socket, databaseProvider);
+                tpe.execute(handleSocket);
             }
         } catch(IOException e) {
             e.printStackTrace();
@@ -51,11 +52,11 @@ public class Server {
 
 class HandleSocket implements Runnable {
     private Socket socket;
-    private TableManager tbm;
+    private DatabaseProvider databaseProvider;
 
-    public HandleSocket(Socket socket, TableManager tbm) {
+    public HandleSocket(Socket socket, DatabaseProvider databaseProvider) {
         this.socket = socket;
-        this.tbm = tbm;
+        this.databaseProvider = databaseProvider;
     }
 
     @Override
@@ -76,7 +77,7 @@ class HandleSocket implements Runnable {
             }
             return;
         }
-        Executor exe = new Executor(tbm);
+        Executor exe = new Executor(databaseProvider);
         while(true) {
             Package pkg = null;
             try {
@@ -88,7 +89,9 @@ class HandleSocket implements Runnable {
             byte[] result = null;
             Exception e = null;
             try {
-                result = exe.execute(sql);
+                ExecResult execResult = exe.execute(sql);
+                // 将 execResult 编码成字节数组 byte[]
+                result = ExecResultCodec.encode(execResult);
             } catch (Exception e1) {
                 e = e1;
                 e.printStackTrace();

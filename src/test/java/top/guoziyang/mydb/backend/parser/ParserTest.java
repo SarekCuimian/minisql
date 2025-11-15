@@ -13,12 +13,13 @@ import top.guoziyang.mydb.backend.parser.statement.Insert;
 import top.guoziyang.mydb.backend.parser.statement.Select;
 import top.guoziyang.mydb.backend.parser.statement.Show;
 import top.guoziyang.mydb.backend.parser.statement.Update;
+import top.guoziyang.mydb.backend.vm.IsolationLevel;
 
 public class ParserTest {
     @Test
     public void testCreate() throws Exception {
         String stat = "create table student id int32, name string, uid int64, (index name id uid)";
-        Object res = Parser.Parse(stat.getBytes());
+        Object res = Parser.parse(stat.getBytes());
         Create create = (Create)res;
         assert "student".equals(create.tableName);
         System.out.println("Create");
@@ -32,25 +33,25 @@ public class ParserTest {
     @Test
     public void testBegin() throws Exception {
         String stat = "begin isolation level read committed";
-        Object res = Parser.Parse(stat.getBytes());
+        Object res = Parser.parse(stat.getBytes());
         Begin begin = (Begin)res;
-        assert !begin.isRepeatableRead;
+        assert !begin.isolationLevel.equals(IsolationLevel.REPEATABLE_READ);
 
         stat = "begin";
-        res = Parser.Parse(stat.getBytes());
+        res = Parser.parse(stat.getBytes());
         begin = (Begin)res;
-        assert !begin.isRepeatableRead;
+        assert !begin.isolationLevel.equals(IsolationLevel.REPEATABLE_READ);
 
         stat = "begin isolation level repeatable read";
-        res = Parser.Parse(stat.getBytes());
+        res = Parser.parse(stat.getBytes());
         begin = (Begin)res;
-        assert begin.isRepeatableRead;
+        assert begin.isolationLevel.equals(IsolationLevel.REPEATABLE_READ);
     }
 
     @Test
     public void testRead() throws Exception {
         String stat = "select name, id, strudeng from student where id > 1 and id < 4";
-        Object res = Parser.Parse(stat.getBytes());
+        Object res = Parser.parse(stat.getBytes());
         Select select = (Select)res;
         assert "student".equals(select.tableName);
         Gson gson = new Gson();
@@ -63,7 +64,7 @@ public class ParserTest {
     @Test
     public void testInsert() throws Exception {
         String stat = "insert into student values 5 \"Guo Ziyang\" 22";
-        Object res = Parser.Parse(stat.getBytes());
+        Object res = Parser.parse(stat.getBytes());
         Insert insert = (Insert)res;
         Gson gson = new Gson();
         System.out.println("Insert");
@@ -74,7 +75,7 @@ public class ParserTest {
     @Test
     public void testDelete() throws Exception {
         String stat = "delete from student where name = \"Guo Ziyang\"";
-        Object res = Parser.Parse(stat.getBytes());
+        Object res = Parser.parse(stat.getBytes());
         Delete delete = (Delete)res;
         Gson gson = new Gson();
         System.out.println("Delete");
@@ -85,7 +86,7 @@ public class ParserTest {
     @Test
     public void testShow() throws Exception {
         String stat = "show";
-        Object res = Parser.Parse(stat.getBytes());
+        Object res = Parser.parse(stat.getBytes());
         Show show = (Show)res;
         Gson gson = new Gson();
         System.out.println("Show");
@@ -96,7 +97,7 @@ public class ParserTest {
     @Test
     public void testUpdate() throws Exception {
         String stat = "update student set name = \"GZY\" where id = 5";
-        Object res = Parser.Parse(stat.getBytes());
+        Object res = Parser.parse(stat.getBytes());
         Update update = (Update)res;
         Gson gson = new Gson();
         System.out.println("Update");

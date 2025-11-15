@@ -41,8 +41,8 @@ public class TransactionManagerImpl implements TransactionManager {
     }
 
     /**
-     * 检查XID文件是否合法
-     * 读取XID_FILE_HEADER中的xidcounter，根据它计算文件的理论长度，对比实际长度
+     * 检查 XID 文件是否合法
+     * 读取 XID_FILE_HEADER 中的 xidCounter，根据它计算文件的理论长度，对比实际长度
      */
     private void checkXIDCounter() {
         long fileLen = 0;

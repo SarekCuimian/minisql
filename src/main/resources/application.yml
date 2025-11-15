@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: mini-sql-service
+server:
+  port: 9906
+
+minisql:
+  engine:
+    host: 127.0.0.1
+    port: 9999

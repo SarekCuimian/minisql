@@ -16,8 +16,8 @@ import top.guoziyang.mydb.common.Error;
 /**
  * field 表示字段信息
  * 二进制格式为：
- * [FieldName][TypeName][IndexUid]
- * 如果field无索引，IndexUid为0
+ * [FieldName][TypeName][IndexUid][UniqueFlag]
+ * 如果field无索引，IndexUid为0；UniqueFlag 为 1 表示唯一
  */
 public class Field {
     long uid;
@@ -25,6 +25,7 @@ public class Field {
     String fieldName;
     String fieldType;
     private long index;
+    private boolean unique;
     private BPlusTree bt;
 
     public static Field loadField(Table tb, long uid) {
@@ -43,11 +44,12 @@ public class Field {
         this.tb = tb;
     }
 
-    public Field(Table tb, String fieldName, String fieldType, long index) {
+    public Field(Table tb, String fieldName, String fieldType, long index, boolean unique) {
         this.tb = tb;
         this.fieldName = fieldName;
         this.fieldType = fieldType;
         this.index = index;
+        this.unique = unique;
     }
 
     private Field parseSelf(byte[] raw) {
@@ -66,12 +68,21 @@ public class Field {
                 Panic.panic(e);
             }
         }
+        position += 8;
+        if(position < raw.length) {
+            unique = raw[position] == (byte)1;
+        } else {
+            unique = false;
+        }
         return this;
     }
 
-    public static Field createField(Table tb, long xid, String fieldName, String fieldType, boolean indexed) throws Exception {
+    public static Field createField(Table tb, long xid, String fieldName, String fieldType, boolean indexed, boolean unique) throws Exception {
         typeCheck(fieldType);
-        Field f = new Field(tb, fieldName, fieldType, 0);
+        if(unique && !indexed) {
+            indexed = true;
+        }
+        Field f = new Field(tb, fieldName, fieldType, 0, unique);
         if(indexed) {
             long index = BPlusTree.create(((TableManagerImpl)tb.tbm).dm);
             BPlusTree bt = BPlusTree.load(index, ((TableManagerImpl)tb.tbm).dm);
@@ -86,7 +97,8 @@ public class Field {
         byte[] nameRaw = Parser.string2Byte(fieldName);
         byte[] typeRaw = Parser.string2Byte(fieldType);
         byte[] indexRaw = Parser.long2Byte(index);
-        this.uid = ((TableManagerImpl)tb.tbm).vm.insert(xid, Bytes.concat(nameRaw, typeRaw, indexRaw));
+        byte[] uniqueRaw = new byte[] {(byte)(unique?1:0)};
+        this.uid = ((TableManagerImpl)tb.tbm).vm.insert(xid, Bytes.concat(nameRaw, typeRaw, indexRaw, uniqueRaw));
     }
 
     private static void typeCheck(String fieldType) throws Exception {
@@ -97,6 +109,29 @@ public class Field {
 
     public boolean isIndexed() {
         return index != 0;
+    }
+
+    public boolean isUnique() {
+        return unique;
+    }
+
+    public void ensureUnique(Object key, Long selfUid) throws Exception {
+        if(!unique) return;
+        long uKey = value2Uid(key);
+        List<Long> uids = bt.searchRange(uKey, uKey);
+        if(uids == null || uids.isEmpty()) {
+            return;
+        }
+        TableManagerImpl tm = (TableManagerImpl)tb.tbm;
+        for (Long uid : uids) {
+            if(selfUid != null && selfUid.equals(uid)) {
+                continue;
+            }
+            byte[] raw = tm.vm.read(TransactionManagerImpl.SUPER_XID, uid);
+            if(raw != null) {
+                throw Error.DuplicatedEntryException;
+            }
+        }
     }
 
     public void insert(Object key, long uid) throws Exception {
@@ -200,6 +235,7 @@ public class Field {
             .append(", ")
             .append(fieldType)
             .append(index!=0?", Index":", NoIndex")
+            .append(unique?", Unique":", NonUnique")
             .append(")")
             .toString();
     }

@@ -5,11 +5,6 @@ import java.util.concurrent.CountDownLatch;
 
 import org.junit.Test;
 
-import top.guoziyang.mydb.backend.dm.DataManager;
-import top.guoziyang.mydb.backend.tbm.TableManager;
-import top.guoziyang.mydb.backend.tm.TransactionManager;
-import top.guoziyang.mydb.backend.vm.VersionManager;
-
 public class ExecutorTest {
     String path = "/tmp/mydb";
     long mem = (1 << 20) * 64;
@@ -17,12 +12,14 @@ public class ExecutorTest {
     byte[] CREATE_TABLE = "create table test_table id int32 (index id)".getBytes();
     byte[] INSERT = "insert into test_table values 2333".getBytes();
 
+    private DatabaseProvider provider;
+
     private Executor testCreate() throws Exception {
-        TransactionManager tm = TransactionManager.create(path);
-        DataManager dm = DataManager.create(path, mem, tm);
-        VersionManager vm = VersionManager.newVersionManager(tm, dm);
-        TableManager tbm = TableManager.create(path, vm, dm);
-        Executor exe = new Executor(tbm);
+        cleanup();
+        provider = new DatabaseProvider(path, mem);
+        provider.ensureDefaultDatabase();
+        Executor exe = new Executor(provider);
+        exe.execute("use database".getBytes());
         exe.execute(CREATE_TABLE);
         return exe;
     }
@@ -38,16 +35,14 @@ public class ExecutorTest {
     public void testInsert10000() throws Exception {
         Executor exe = testCreate();
         testInsert(exe, 10000, 1);
-        new File(path + ".db").delete();
-        new File(path + ".bt").delete();
-        new File(path + ".log").delete();
-        new File(path + ".xid").delete();
+        provider.shutdown();
+        cleanup();
     }
 
     private void testMultiInsert(int total, int noWorkers) throws Exception {
         Executor exe = testCreate();
         // 这里必须用不同的executor，否则会出现并发问题
-        TableManager tbm = exe.tbm;
+        DatabaseProvider sharedProvider = provider;
         int w = total/noWorkers;
         CountDownLatch cdl = new CountDownLatch(noWorkers);
         for(int i = 0; i < noWorkers; i ++) {
@@ -56,7 +51,9 @@ public class ExecutorTest {
                 @Override
                 public void run() {
                     try {
-                        testInsert(new Executor(tbm), w, no);
+                        Executor worker = new Executor(sharedProvider);
+                        worker.execute("use database".getBytes());
+                        testInsert(worker, w, no);
                         cdl.countDown();
                     } catch (Exception e) {
                         e.printStackTrace();
@@ -70,9 +67,26 @@ public class ExecutorTest {
     @Test
     public void test100000With4() throws Exception {
         testMultiInsert(10000, 4);
-        new File(path + ".db").delete();
-        new File(path + ".bt").delete();
-        new File(path + ".log").delete();
-        new File(path + ".xid").delete();
+        provider.shutdown();
+        cleanup();
+    }
+
+    private void cleanup() {
+        deleteRecursively(new File(path));
+    }
+
+    private void deleteRecursively(File file) {
+        if(!file.exists()) {
+            return;
+        }
+        if(file.isDirectory()) {
+            File[] children = file.listFiles();
+            if(children != null) {
+                for (File child : children) {
+                    deleteRecursively(child);
+                }
+            }
+        }
+        file.delete();
     }
 }

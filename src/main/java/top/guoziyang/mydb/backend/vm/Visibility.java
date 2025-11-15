@@ -6,7 +6,7 @@ public class Visibility {
     
     public static boolean isVersionSkip(TransactionManager tm, Transaction t, Entry e) {
         long xmax = e.getXmax();
-        if(t.level == 0) {
+        if(t.level == IsolationLevel.READ_COMMITTED) {
             return false;
         } else {
             return tm.isCommitted(xmax) && (xmax > t.xid || t.isInSnapshot(xmax));
@@ -14,7 +14,7 @@ public class Visibility {
     }
 
     public static boolean isVisible(TransactionManager tm, Transaction t, Entry e) {
-        if(t.level == 0) {
+        if(t.level == IsolationLevel.READ_COMMITTED) {
             return readCommitted(tm, t, e);
         } else {
             return repeatableRead(tm, t, e);

@@ -8,16 +8,16 @@ import top.guoziyang.mydb.backend.tm.TransactionManagerImpl;
 // vm对一个事务的抽象
 public class Transaction {
     public long xid;
-    public int level;
+    public IsolationLevel level;
     public Map<Long, Boolean> snapshot;
     public Exception err;
     public boolean autoAborted;
 
-    public static Transaction newTransaction(long xid, int level, Map<Long, Transaction> active) {
+    public static Transaction newTransaction(long xid, IsolationLevel level, Map<Long, Transaction> active) {
         Transaction t = new Transaction();
         t.xid = xid;
         t.level = level;
-        if(level != 0) {
+        if(level == IsolationLevel.REPEATABLE_READ && active != null) {
             t.snapshot = new HashMap<>();
             for(Long x : active.keySet()) {
                 t.snapshot.put(x, true);
@@ -27,6 +27,9 @@ public class Transaction {
     }
 
     public boolean isInSnapshot(long xid) {
+        if(snapshot == null) {
+            return false;
+        }
         if(xid == TransactionManagerImpl.SUPER_XID) {
             return false;
         }

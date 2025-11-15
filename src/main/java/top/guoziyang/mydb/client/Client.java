@@ -1,5 +1,7 @@
 package top.guoziyang.mydb.client;
 
+import top.guoziyang.mydb.backend.utils.format.ExecResult;
+import top.guoziyang.mydb.backend.utils.format.ExecResultCodec;
 import top.guoziyang.mydb.transport.Package;
 import top.guoziyang.mydb.transport.Packager;
 
@@ -10,13 +12,13 @@ public class Client {
         this.rt = new RoundTripper(packager);
     }
 
-    public byte[] execute(byte[] stat) throws Exception {
+    public ExecResult execute(byte[] stat) throws Exception {
         Package pkg = new Package(stat, null);
         Package resPkg = rt.roundTrip(pkg);
         if(resPkg.getErr() != null) {
             throw resPkg.getErr();
         }
-        return resPkg.getData();
+        return ExecResultCodec.decode(resPkg.getData());
     }
 
     public void close() {

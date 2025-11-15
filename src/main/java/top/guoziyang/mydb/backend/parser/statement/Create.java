@@ -5,4 +5,5 @@ public class Create {
     public String[] fieldName;
     public String[] fieldType;
     public String[] index;
+    public String[] unique;
 }

@@ -29,10 +29,16 @@ public class Error {
     public static final Exception InvalidValuesException = new RuntimeException("Invalid values!");
     public static final Exception DuplicatedTableException = new RuntimeException("Duplicated table!");
     public static final Exception TableNotFoundException = new RuntimeException("Table not found!");
+    public static final Exception DuplicatedEntryException = new RuntimeException("Duplicate entry!");
 
     // parser
     public static final Exception InvalidCommandException = new RuntimeException("Invalid command!");
     public static final Exception TableNoIndexException = new RuntimeException("Table has no index!");
+    public static final Exception DatabaseExistsException = new RuntimeException("Database already exists!");
+    public static final Exception DatabaseNotFoundException = new RuntimeException("Database not found!");
+    public static final Exception NoDatabaseSelectedException = new RuntimeException("No database selected!");
+    public static final Exception DatabaseInUseException = new RuntimeException("Database is in use!");
+    public static final Exception SwitchDatabaseInTxnException = new RuntimeException("Cannot switch database within a transaction!");
 
     // transport
     public static final Exception InvalidPkgDataException = new RuntimeException("Invalid package data!");

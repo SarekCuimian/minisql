@@ -16,8 +16,8 @@ import top.guoziyang.mydb.backend.utils.Parser;
 public class Entry {
 
     private static final int OF_XMIN = 0;
-    private static final int OF_XMAX = OF_XMIN+8;
-    private static final int OF_DATA = OF_XMAX+8;
+    private static final int OF_XMAX = OF_XMIN + 8;
+    private static final int OF_DATA = OF_XMAX + 8;
 
     private long uid;
     private DataItem dataItem;
@@ -39,6 +39,10 @@ public class Entry {
         return newEntry(vm, di, uid);
     }
 
+    /**
+     * entry结构：
+     * [XMIN] [XMAX] [data]
+     */
     public static byte[] wrapEntryRaw(long xid, byte[] data) {
         byte[] xmin = Parser.long2Byte(xid);
         byte[] xmax = new byte[8];
