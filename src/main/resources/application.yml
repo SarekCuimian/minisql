@@ -1,6 +1,6 @@
 spring:
   application:
-    name: mini-sql-service
+    name: minisql-server
 server:
   port: 9906
 
