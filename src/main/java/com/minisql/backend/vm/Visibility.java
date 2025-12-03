@@ -1,36 +1,36 @@
 package com.minisql.backend.vm;
 
-import com.minisql.backend.tm.TransactionManager;
+import com.minisql.backend.txm.TransactionManager;
 
 public class Visibility {
     
-    public static boolean isVersionSkip(TransactionManager tm, Transaction t, Entry e) {
+    public static boolean isVersionSkip(TransactionManager txm, Transaction tx, Entry e) {
         long xmax = e.getXmax();
-        if(t.level == IsolationLevel.READ_COMMITTED) {
+        if(tx.level == IsolationLevel.READ_COMMITTED) {
             return false;
         } else {
-            return tm.isCommitted(xmax) && (xmax > t.xid || t.isInSnapshot(xmax));
+            return txm.isCommitted(xmax) && (xmax > tx.xid || tx.isInSnapshot(xmax));
         }
     }
 
-    public static boolean isVisible(TransactionManager tm, Transaction t, Entry e) {
-        if(t.level == IsolationLevel.READ_COMMITTED) {
-            return readCommitted(tm, t, e);
+    public static boolean isVisible(TransactionManager txm, Transaction tx, Entry e) {
+        if(tx.level == IsolationLevel.READ_COMMITTED) {
+            return readCommitted(txm, tx, e);
         } else {
-            return repeatableRead(tm, t, e);
+            return repeatableRead(txm, tx, e);
         }
     }
 
-    private static boolean readCommitted(TransactionManager tm, Transaction t, Entry e) {
-        long xid = t.xid;
+    private static boolean readCommitted(TransactionManager txm, Transaction tx, Entry e) {
+        long xid = tx.xid;
         long xmin = e.getXmin();
         long xmax = e.getXmax();
         if(xmin == xid && xmax == 0) return true;
 
-        if(tm.isCommitted(xmin)) {
+        if(txm.isCommitted(xmin)) {
             if(xmax == 0) return true;
             if(xmax != xid) {
-                if(!tm.isCommitted(xmax)) {
+                if(!txm.isCommitted(xmax)) {
                     return true;
                 }
             }
@@ -38,16 +38,16 @@ public class Visibility {
         return false;
     }
 
-    private static boolean repeatableRead(TransactionManager tm, Transaction t, Entry e) {
-        long xid = t.xid;
+    private static boolean repeatableRead(TransactionManager txm, Transaction tx, Entry e) {
+        long xid = tx.xid;
         long xmin = e.getXmin();
         long xmax = e.getXmax();
         if(xmin == xid && xmax == 0) return true;
 
-        if(tm.isCommitted(xmin) && xmin < xid && !t.isInSnapshot(xmin)) {
+        if(txm.isCommitted(xmin) && xmin < xid && !tx.isInSnapshot(xmin)) {
             if(xmax == 0) return true;
             if(xmax != xid) {
-                if(!tm.isCommitted(xmax) || xmax > xid || t.isInSnapshot(xmax)) {
+                if(!txm.isCommitted(xmax) || xmax > xid || tx.isInSnapshot(xmax)) {
                     return true;
                 }
             }

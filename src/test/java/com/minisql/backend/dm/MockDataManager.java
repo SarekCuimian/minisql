@@ -7,8 +7,8 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import com.minisql.backend.common.SubArray;
-import com.minisql.backend.dm.dataItem.DataItem;
-import com.minisql.backend.dm.dataItem.MockDataItem;
+import com.minisql.backend.dm.dataitem.DataItem;
+import com.minisql.backend.dm.dataitem.MockDataItem;
 
 public class MockDataManager implements DataManager {
 

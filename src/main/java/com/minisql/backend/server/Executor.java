@@ -1,5 +1,7 @@
 package com.minisql.backend.server;
 
+import com.minisql.backend.dbm.DatabaseContext;
+import com.minisql.backend.dbm.DatabaseManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,12 +48,12 @@ public class Executor {
     /** 当前事务 ID，0 表示未处于事务中 */
     private long xid;
 
-    private final DatabaseProvider databaseProvider;
+    private final DatabaseManager databaseManager;
     private DatabaseContext dbContext;
 
     /** 构造 Executor，绑定数据库提供者 */
-    public Executor(DatabaseProvider databaseProvider) {
-        this.databaseProvider = databaseProvider;
+    public Executor(DatabaseManager databaseManager) {
+        this.databaseManager = databaseManager;
         this.xid = 0;
         trySelectDefaultDatabase();
     }
@@ -63,10 +65,10 @@ public class Executor {
         try {
             if(xid != 0 && dbContext != null) {
                 System.out.println("Abnormal Abort: " + xid);
-                dbContext.tableManager().abort(xid);
+                dbContext.getTableManager().abort(xid);
             }
         } finally {
-            databaseProvider.release(dbContext);
+            databaseManager.release(dbContext);
             dbContext = null;
         }
     }
@@ -136,7 +138,7 @@ public class Executor {
      * @param stat 解析后的语法对象
      * @return 执行结果的字节数组
      */
-    private ExecResult executeSQL(Object stat) throws Exception {
+    private ExecResult executeSQL(Object  stat) throws Exception {
         // SHOW DATABASES 不依赖具体 DB，单独处理
         if(stat instanceof Show && ((Show) stat).target == Show.Target.DATABASES) {
             long start = System.nanoTime();
@@ -177,14 +179,20 @@ public class Executor {
 
         } catch(Exception e1) {
             e = e1;
+            if(!tmpTransaction && isConcurrentUpdateException(e1)) {
+                autoAbortCurrentTransaction();
+            }
             throw e;
         } finally {
             // 自动处理临时事务（成功 → commit，失败 → abort）
             if(tmpTransaction) {
+                long currentXid = xid;
                 if(e != null) {
-                    tbm.abort(xid);
+                    if(currentXid != 0) {
+                        tbm.abort(currentXid);
+                    }
                 } else {
-                    tbm.commit(xid);
+                    tbm.commit(currentXid);
                 }
                 xid = 0;
             }
@@ -267,8 +275,8 @@ public class Executor {
 
     private ExecResult handleUse(Use use) throws Exception {
         ensureNoTransaction();
-        DatabaseContext newCtx = databaseProvider.acquire(use.databaseName);
-        databaseProvider.release(dbContext);
+        DatabaseContext newCtx = databaseManager.acquire(use.databaseName);
+        databaseManager.release(dbContext);
         dbContext = newCtx;
         long start = System.nanoTime();
         byte[] payload = ("Database changed to " + use.databaseName).getBytes(StandardCharsets.UTF_8);
@@ -277,7 +285,7 @@ public class Executor {
 
     private ExecResult handleCreateDatabase(CreateDatabase createDatabase) throws Exception {
         long start = System.nanoTime();
-        databaseProvider.createDatabase(createDatabase.databaseName);
+        databaseManager.create(createDatabase.databaseName);
         byte[] payload = ("create database " + createDatabase.databaseName).getBytes(StandardCharsets.UTF_8);
         return finalizeResult(createDatabase, payload, start);
     }
@@ -285,11 +293,11 @@ public class Executor {
     private ExecResult handleDropDatabase(DropDatabase dropDatabase) throws Exception {
         ensureNoTransaction();
         if(dbContext != null && dropDatabase.databaseName.equals(dbContext.getName())) {
-            databaseProvider.release(dbContext);
+            databaseManager.release(dbContext);
             dbContext = null;
         }
         long start = System.nanoTime();
-        databaseProvider.dropDatabase(dropDatabase.databaseName);
+        databaseManager.drop(dropDatabase.databaseName);
         byte[] payload = ("drop database " + dropDatabase.databaseName).getBytes(StandardCharsets.UTF_8);
         return finalizeResult(dropDatabase, payload, start);
     }
@@ -298,7 +306,7 @@ public class Executor {
         if(dbContext == null) {
             throw Error.NoDatabaseSelectedException;
         }
-        return dbContext.tableManager();
+        return dbContext.getTableManager();
     }
 
     private void ensureNoTransaction() throws Exception {
@@ -308,21 +316,45 @@ public class Executor {
     }
 
     private byte[] formatDatabases() {
-        List<String> dbs = databaseProvider.listDatabases();
+        List<String> dbs = databaseManager.show();
         SelectStats.setRowCount(dbs.size());
         return TextTableFormatter.formatSingleColumn("Database", dbs).getBytes(StandardCharsets.UTF_8);
     }
 
     private void trySelectDefaultDatabase() {
-        String defaultDb = databaseProvider.defaultDatabaseName();
+        String defaultDb = databaseManager.defaultDatabaseName();
         if(defaultDb == null) {
             return;
         }
         try {
-            dbContext = databaseProvider.acquire(defaultDb);
+            dbContext = databaseManager.acquire(defaultDb);
             LOGGER.info("Default database selected: {}", defaultDb);
         } catch (Exception e) {
             LOGGER.warn("Failed to acquire default database {}: {}", defaultDb, e.getMessage());
+        }
+    }
+
+    private boolean isConcurrentUpdateException(Throwable throwable) {
+        while(throwable != null) {
+            if(throwable == Error.ConcurrentUpdateException) {
+                return true;
+            }
+            throwable = throwable.getCause();
+        }
+        return false;
+    }
+
+    private void autoAbortCurrentTransaction() {
+        long currentXid = xid;
+        if(currentXid == 0) {
+            return;
+        }
+        try {
+            tableManager().abort(currentXid);
+        } catch (Exception abortErr) {
+            LOGGER.warn("Auto abort transaction {} failed: {}", currentXid, abortErr.getMessage());
+        } finally {
+            xid = 0;
         }
     }
 }

@@ -5,8 +5,8 @@ import java.util.Arrays;
 import java.util.List;
 
 import com.minisql.backend.common.SubArray;
-import com.minisql.backend.dm.dataItem.DataItem;
-import com.minisql.backend.tm.TransactionManagerImpl;
+import com.minisql.backend.dm.dataitem.DataItem;
+import com.minisql.backend.txm.TransactionManagerImpl;
 import com.minisql.backend.utils.Parser;
 
 /**
@@ -164,7 +164,7 @@ public class Node {
         }
     }
 
-    class LeafSearchRangeRes {
+    static class LeafSearchRangeRes {
         List<Long> uids;
         long siblingUid;
     }
@@ -204,7 +204,7 @@ public class Node {
         }
     }
 
-    class InsertAndSplitRes {
+    static class InsertAndSplitRes {
         long siblingUid, newSon, newKey;
     }
 
@@ -275,7 +275,7 @@ public class Node {
         return BALANCE_NUMBER*2 == getRawNoKeys(raw);
     }
 
-    class SplitRes {
+    static class SplitRes {
         long newSon, newKey;
     }
 

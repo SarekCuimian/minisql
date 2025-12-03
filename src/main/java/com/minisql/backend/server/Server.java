@@ -8,6 +8,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
+import com.minisql.backend.dbm.DatabaseManager;
 import com.minisql.backend.utils.format.ExecResult;
 import com.minisql.backend.utils.format.ExecResultCodec;
 import com.minisql.transport.Encoder;
@@ -17,11 +18,11 @@ import com.minisql.transport.Transporter;
 
 public class Server {
     private int port;
-    private final DatabaseProvider databaseProvider;
+    private final DatabaseManager databaseManager;
 
-    public Server(int port, DatabaseProvider databaseProvider) {
+    public Server(int port, DatabaseManager databaseManager) {
         this.port = port;
-        this.databaseProvider = databaseProvider;
+        this.databaseManager = databaseManager;
     }
 
     public void start() {
@@ -33,11 +34,21 @@ public class Server {
             return;
         }
         System.out.println("Server listen to port: " + port);
-        ThreadPoolExecutor tpe = new ThreadPoolExecutor(10, 20, 1L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(100), new ThreadPoolExecutor.CallerRunsPolicy());
+
+        // 线程池
+        ThreadPoolExecutor tpe = new ThreadPoolExecutor(
+            10, 
+            20, 
+            1L, 
+            TimeUnit.SECONDS, 
+            new ArrayBlockingQueue<>(100), 
+            new ThreadPoolExecutor.CallerRunsPolicy()
+        );
+        
         try {
             while(true) {
                 Socket socket = ss.accept();
-                Runnable handleSocket = new HandleSocket(socket, databaseProvider);
+                Runnable handleSocket = new HandleSocket(socket, databaseManager);
                 tpe.execute(handleSocket);
             }
         } catch(IOException e) {
@@ -52,11 +63,11 @@ public class Server {
 
 class HandleSocket implements Runnable {
     private Socket socket;
-    private DatabaseProvider databaseProvider;
+    private DatabaseManager databaseManager;
 
-    public HandleSocket(Socket socket, DatabaseProvider databaseProvider) {
+    public HandleSocket(Socket socket, DatabaseManager databaseManager) {
         this.socket = socket;
-        this.databaseProvider = databaseProvider;
+        this.databaseManager = databaseManager;
     }
 
     @Override
@@ -77,7 +88,7 @@ class HandleSocket implements Runnable {
             }
             return;
         }
-        Executor exe = new Executor(databaseProvider);
+        Executor exe = new Executor(databaseManager);
         while(true) {
             Package pkg = null;
             try {

@@ -15,7 +15,7 @@ import com.minisql.backend.parser.statement.Select;
 import com.minisql.backend.parser.statement.Update;
 import com.minisql.backend.parser.statement.Where;
 import com.minisql.backend.tbm.Field.ParseValueRes;
-import com.minisql.backend.tm.TransactionManagerImpl;
+import com.minisql.backend.txm.TransactionManagerImpl;
 import com.minisql.backend.utils.Panic;
 import com.minisql.backend.utils.ParseStringRes;
 import com.minisql.backend.utils.Parser;
@@ -225,9 +225,11 @@ public class Table {
             rowData.put(fd.fieldName, value);
 
             validateUniqueConstraints(rowData, uid);
-
+            // 删除旧记录
             ((TableManagerImpl)tbm).vm.delete(xid, uid);
+
             raw = RowData2Raw(rowData);
+            // 插入新记录
             long uuid = ((TableManagerImpl)tbm).vm.insert(xid, raw);
             
             count ++;

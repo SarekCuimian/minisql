@@ -7,11 +7,11 @@
     <version>2.7.18</version>
     <relativePath/>
   </parent>
-  <groupId>top.guoziyang</groupId>
-  <artifactId>MyDB</artifactId>
+  <groupId>com</groupId>
+  <artifactId>minisql</artifactId>
   <packaging>jar</packaging>
   <version>1.0-SNAPSHOT</version>
-  <name>MyDB</name>
+  <name>MiniSQL</name>
   <url>http://maven.apache.org</url>
 
   <properties>

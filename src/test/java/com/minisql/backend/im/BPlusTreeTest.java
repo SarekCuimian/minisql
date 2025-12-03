@@ -6,15 +6,15 @@ import java.util.List;
 import org.junit.Test;
 
 import com.minisql.backend.dm.DataManager;
-import com.minisql.backend.dm.pageCache.PageCache;
-import com.minisql.backend.tm.MockTransactionManager;
-import com.minisql.backend.tm.TransactionManager;
+import com.minisql.backend.dm.page.cache.PageCache;
+import com.minisql.backend.txm.MockTransactionManager;
+import com.minisql.backend.txm.TransactionManager;
 
 public class BPlusTreeTest {
     @Test
     public void testTreeSingle() throws Exception {
-        TransactionManager tm = new MockTransactionManager();
-        DataManager dm = DataManager.create("/tmp/TestTreeSingle", PageCache.PAGE_SIZE*10, tm);
+        TransactionManager txm = new MockTransactionManager();
+        DataManager dm = DataManager.create("/tmp/TestTreeSingle", PageCache.PAGE_SIZE*10, txm);
 
         long root = BPlusTree.create(dm);
         BPlusTree tree = BPlusTree.load(root, dm);

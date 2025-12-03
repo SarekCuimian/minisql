@@ -1,33 +1,33 @@
 package com.minisql.backend.dm;
 
 import com.minisql.backend.common.AbstractCache;
-import com.minisql.backend.dm.dataItem.DataItem;
-import com.minisql.backend.dm.dataItem.DataItemImpl;
+import com.minisql.backend.dm.dataitem.DataItem;
+import com.minisql.backend.dm.dataitem.DataItemImpl;
 import com.minisql.backend.dm.logger.Logger;
 import com.minisql.backend.dm.page.Page;
 import com.minisql.backend.dm.page.PageOne;
 import com.minisql.backend.dm.page.PageX;
-import com.minisql.backend.dm.pageCache.PageCache;
-import com.minisql.backend.dm.pageIndex.PageIndex;
-import com.minisql.backend.dm.pageIndex.PageInfo;
-import com.minisql.backend.tm.TransactionManager;
+import com.minisql.backend.dm.page.cache.PageCache;
+import com.minisql.backend.dm.page.index.PageIndex;
+import com.minisql.backend.dm.page.index.PageInfo;
+import com.minisql.backend.txm.TransactionManager;
 import com.minisql.backend.utils.Panic;
 import com.minisql.backend.utils.Types;
 import com.minisql.common.Error;
 
 public class DataManagerImpl extends AbstractCache<DataItem> implements DataManager {
 
-    TransactionManager tm;
+    TransactionManager txm;
     PageCache pc;
     Logger logger;
     PageIndex pIndex;
     Page pageOne;
 
-    public DataManagerImpl(PageCache pc, Logger logger, TransactionManager tm) {
+    public DataManagerImpl(PageCache pc, Logger logger, TransactionManager txm) {
         super(0);
         this.pc = pc;
         this.logger = logger;
-        this.tm = tm;
+        this.txm = txm;
         this.pIndex = new PageIndex();
     }
 
@@ -66,7 +66,9 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
         int freeSpace = 0;
         try {
             pg = pc.getPage(pi.pgno);
+            // 把一次更新操作序列化成 WAL payload
             byte[] log = Recover.insertLog(xid, pg, raw);
+            // 把 payload 包入 [Size][Checksum][Data] 并顺序写入 .log 文件
             logger.log(log);
 
             short offset = PageX.insert(pg, raw);

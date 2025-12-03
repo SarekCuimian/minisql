@@ -18,8 +18,16 @@ cleanup() {
 trap cleanup EXIT
 
 ensure_database() {
-    if [[ ! -f "${DB_PATH}.db" ]]; then
-        echo "[INFO] Database not found at ${DB_PATH}, creating..."
+    if [[ ! -d "${DB_PATH}" ]]; then
+        echo "[INFO] Database directory ${DB_PATH} not found, creating..."
+        mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" \
+            -Dexec.args="-create ${DB_PATH}"
+        return
+    fi
+
+    local default_db_dir="${DB_PATH}/database"
+    if [[ ! -d "${default_db_dir}" ]]; then
+        echo "[INFO] Default database missing under ${DB_PATH}, creating..."
         mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" \
             -Dexec.args="-create ${DB_PATH}"
     fi

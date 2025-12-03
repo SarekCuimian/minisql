@@ -13,10 +13,10 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.junit.Test;
 
 import com.minisql.backend.common.SubArray;
-import com.minisql.backend.dm.dataItem.DataItem;
-import com.minisql.backend.dm.pageCache.PageCache;
-import com.minisql.backend.tm.MockTransactionManager;
-import com.minisql.backend.tm.TransactionManager;
+import com.minisql.backend.dm.dataitem.DataItem;
+import com.minisql.backend.dm.page.cache.PageCache;
+import com.minisql.backend.txm.MockTransactionManager;
+import com.minisql.backend.txm.TransactionManager;
 import com.minisql.backend.utils.Panic;
 import com.minisql.backend.utils.RandomUtil;
 
@@ -96,8 +96,8 @@ public class DataManagerTest {
     
     @Test
     public void testDMSingle() throws Exception {
-        TransactionManager tm0 = new MockTransactionManager();
-        DataManager dm0 = DataManager.create("/tmp/TESTDMSingle", PageCache.PAGE_SIZE*10, tm0);
+        TransactionManager txm0 = new MockTransactionManager();
+        DataManager dm0 = DataManager.create("/tmp/TESTDMSingle", PageCache.PAGE_SIZE*10, txm0);
         DataManager mdm = MockDataManager.newMockDataManager();
 
         int tasksNum = 10000;
@@ -114,8 +114,8 @@ public class DataManagerTest {
 
     @Test
     public void testDMMulti() throws InterruptedException {
-        TransactionManager tm0 = new MockTransactionManager();
-        DataManager dm0 = DataManager.create("/tmp/TestDMMulti", PageCache.PAGE_SIZE*10, tm0);
+        TransactionManager txm0 = new MockTransactionManager();
+        DataManager dm0 = DataManager.create("/tmp/TestDMMulti", PageCache.PAGE_SIZE*10, txm0);
         DataManager mdm = MockDataManager.newMockDataManager();
 
         int tasksNum = 500;
@@ -134,15 +134,15 @@ public class DataManagerTest {
 
     @Test
     public void testRecoverySimple() throws InterruptedException {
-        TransactionManager tm0 = TransactionManager.create("/tmp/TestRecoverySimple");
-        DataManager dm0 = DataManager.create("/tmp/TestRecoverySimple", PageCache.PAGE_SIZE*30, tm0);
+        TransactionManager txm0 = TransactionManager.create("/tmp/TestRecoverySimple");
+        DataManager dm0 = DataManager.create("/tmp/TestRecoverySimple", PageCache.PAGE_SIZE*30, txm0);
         DataManager mdm = MockDataManager.newMockDataManager();
         dm0.close();
 
         initUids();
         int workerNums = 10;
         for(int i = 0; i < 8; i ++) {
-            dm0 = DataManager.open("/tmp/TestRecoverySimple", PageCache.PAGE_SIZE*10, tm0);
+            dm0 = DataManager.open("/tmp/TestRecoverySimple", PageCache.PAGE_SIZE*10, txm0);
             CountDownLatch cdl = new CountDownLatch(workerNums);
             for(int k = 0; k < workerNums; k ++) {
                 final DataManager dm = dm0;

@@ -8,11 +8,11 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import com.minisql.backend.common.SubArray;
 import com.minisql.backend.dm.DataManager;
-import com.minisql.backend.dm.dataItem.DataItem;
+import com.minisql.backend.dm.dataitem.DataItem;
 import com.minisql.backend.im.Node.InsertAndSplitRes;
 import com.minisql.backend.im.Node.LeafSearchRangeRes;
 import com.minisql.backend.im.Node.SearchNextRes;
-import com.minisql.backend.tm.TransactionManagerImpl;
+import com.minisql.backend.txm.TransactionManagerImpl;
 import com.minisql.backend.utils.Parser;
 
 public class BPlusTree {
@@ -139,7 +139,7 @@ public class BPlusTree {
         }
     }
 
-    class InsertRes {
+    static class InsertRes {
         long newNode, newKey;
     }
 

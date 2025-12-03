@@ -3,6 +3,7 @@ package com.minisql.backend.server;
 import java.io.File;
 import java.util.concurrent.CountDownLatch;
 
+import com.minisql.backend.dbm.DatabaseManager;
 import org.junit.Test;
 
 public class ExecutorTest {
@@ -12,12 +13,12 @@ public class ExecutorTest {
     byte[] CREATE_TABLE = "create table test_table id int32 (index id)".getBytes();
     byte[] INSERT = "insert into test_table values 2333".getBytes();
 
-    private DatabaseProvider provider;
+    private DatabaseManager provider;
 
     private Executor testCreate() throws Exception {
         cleanup();
-        provider = new DatabaseProvider(path, mem);
-        provider.ensureDefaultDatabase();
+        provider = new DatabaseManager(path, mem);
+        provider.createDefault();
         Executor exe = new Executor(provider);
         exe.execute("use database".getBytes());
         exe.execute(CREATE_TABLE);
@@ -42,7 +43,7 @@ public class ExecutorTest {
     private void testMultiInsert(int total, int noWorkers) throws Exception {
         Executor exe = testCreate();
         // 这里必须用不同的executor，否则会出现并发问题
-        DatabaseProvider sharedProvider = provider;
+        DatabaseManager sharedProvider = provider;
         int w = total/noWorkers;
         CountDownLatch cdl = new CountDownLatch(noWorkers);
         for(int i = 0; i < noWorkers; i ++) {

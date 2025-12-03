@@ -7,7 +7,7 @@ import com.google.common.primitives.Bytes;
 
 import com.minisql.backend.im.BPlusTree;
 import com.minisql.backend.parser.statement.SingleExpression;
-import com.minisql.backend.tm.TransactionManagerImpl;
+import com.minisql.backend.txm.TransactionManagerImpl;
 import com.minisql.backend.utils.Panic;
 import com.minisql.backend.utils.ParseStringRes;
 import com.minisql.backend.utils.Parser;

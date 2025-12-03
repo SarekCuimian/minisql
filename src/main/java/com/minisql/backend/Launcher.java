@@ -7,7 +7,7 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 
 import com.minisql.backend.server.Server;
-import com.minisql.backend.server.DatabaseProvider;
+import com.minisql.backend.dbm.DatabaseManager;
 import com.minisql.backend.utils.Panic;
 import com.minisql.common.Error;
 
@@ -40,15 +40,15 @@ public class Launcher {
     }
 
     private static void createDB(String path) {
-        DatabaseProvider provider = new DatabaseProvider(path, DEFAULT_MEM);
-        provider.ensureDefaultDatabase();
-        provider.shutdown();
+        DatabaseManager dbm = new DatabaseManager(path, DEFAULT_MEM);
+        dbm.createDefault();
+        dbm.shutdown();
     }
 
     private static void openDB(String path, long mem) {
-        DatabaseProvider provider = new DatabaseProvider(path, mem);
-        provider.ensureDefaultDatabase();
-        new Server(port, provider).start();
+        DatabaseManager dbm = new DatabaseManager(path, mem);
+        dbm.createDefault();
+        new Server(port, dbm).start();
     }
 
     private static long parseMem(String memStr) {

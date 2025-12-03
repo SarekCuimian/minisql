@@ -5,7 +5,7 @@ import java.util.Arrays;
 import com.google.common.primitives.Bytes;
 
 import com.minisql.backend.common.SubArray;
-import com.minisql.backend.dm.dataItem.DataItem;
+import com.minisql.backend.dm.dataitem.DataItem;
 import com.minisql.backend.utils.Parser;
 
 /**

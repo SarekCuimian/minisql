@@ -3,36 +3,45 @@ package com.minisql.backend.vm;
 import java.util.HashMap;
 import java.util.Map;
 
-import com.minisql.backend.tm.TransactionManagerImpl;
+import com.minisql.backend.txm.TransactionManagerImpl;
 
 // vm对一个事务的抽象
 public class Transaction {
     public long xid;
     public IsolationLevel level;
-    public Map<Long, Boolean> snapshot;
+    /**
+     * 事务开始时仍然活跃的其他事务 ID
+     */
+    public Map<Long, Boolean> activeSnapshot;
     public Exception err;
     public boolean autoAborted;
 
+    private Transaction() {}
+
     public static Transaction newTransaction(long xid, IsolationLevel level, Map<Long, Transaction> active) {
-        Transaction t = new Transaction();
-        t.xid = xid;
-        t.level = level;
+        Transaction tx = new Transaction();
+        tx.xid = xid;
+        tx.level = level;
         if(level == IsolationLevel.REPEATABLE_READ && active != null) {
-            t.snapshot = new HashMap<>();
+            tx.activeSnapshot = new HashMap<>();
             for(Long x : active.keySet()) {
-                t.snapshot.put(x, true);
+                tx.activeSnapshot.put(x, true);
             }
         }
-        return t;
+        return tx;
     }
 
+    /**
+     * 判断事务是否在激活事务快照中
+     * @param xid 事务ID
+     */
     public boolean isInSnapshot(long xid) {
-        if(snapshot == null) {
+        if(activeSnapshot == null) {
             return false;
         }
         if(xid == TransactionManagerImpl.SUPER_XID) {
             return false;
         }
-        return snapshot.containsKey(xid);
+        return activeSnapshot.containsKey(xid);
     }
 }

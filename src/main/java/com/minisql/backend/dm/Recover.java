@@ -10,12 +10,12 @@ import java.util.Map.Entry;
 import com.google.common.primitives.Bytes;
 
 import com.minisql.backend.common.SubArray;
-import com.minisql.backend.dm.dataItem.DataItem;
+import com.minisql.backend.dm.dataitem.DataItem;
 import com.minisql.backend.dm.logger.Logger;
 import com.minisql.backend.dm.page.Page;
 import com.minisql.backend.dm.page.PageX;
-import com.minisql.backend.dm.pageCache.PageCache;
-import com.minisql.backend.tm.TransactionManager;
+import com.minisql.backend.dm.page.cache.PageCache;
+import com.minisql.backend.txm.TransactionManager;
 import com.minisql.backend.utils.Panic;
 import com.minisql.backend.utils.Parser;
 
@@ -42,7 +42,7 @@ public class Recover {
         byte[] newRaw;
     }
 
-    public static void recover(TransactionManager tm, Logger lg, PageCache pc) {
+    public static void recover(TransactionManager txm, Logger lg, PageCache pc) {
         System.out.println("Recovering...");
 
         lg.rewind();
@@ -68,16 +68,16 @@ public class Recover {
         pc.truncateByBgno(maxPgno);
         System.out.println("Truncate to " + maxPgno + " pages.");
 
-        redoTransactions(tm, lg, pc);
+        redoTransactions(txm, lg, pc);
         System.out.println("Redo Transactions Over.");
 
-        undoTransactions(tm, lg, pc);
+        undoTransactions(txm, lg, pc);
         System.out.println("Undo Transactions Over.");
 
         System.out.println("Recovery Over.");
     }
 
-    private static void redoTransactions(TransactionManager tm, Logger lg, PageCache pc) {
+    private static void redoTransactions(TransactionManager txm, Logger lg, PageCache pc) {
         lg.rewind();
         while(true) {
             byte[] log = lg.next();
@@ -85,20 +85,20 @@ public class Recover {
             if(isInsertLog(log)) {
                 InsertLogInfo li = parseInsertLog(log);
                 long xid = li.xid;
-                if(!tm.isActive(xid)) {
+                if(!txm.isActive(xid)) {
                     doInsertLog(pc, log, REDO);
                 }
             } else {
                 UpdateLogInfo xi = parseUpdateLog(log);
                 long xid = xi.xid;
-                if(!tm.isActive(xid)) {
+                if(!txm.isActive(xid)) {
                     doUpdateLog(pc, log, REDO);
                 }
             }
         }
     }
 
-    private static void undoTransactions(TransactionManager tm, Logger lg, PageCache pc) {
+    private static void undoTransactions(TransactionManager txm, Logger lg, PageCache pc) {
         Map<Long, List<byte[]>> logCache = new HashMap<>();
         lg.rewind();
         while(true) {
@@ -107,7 +107,7 @@ public class Recover {
             if(isInsertLog(log)) {
                 InsertLogInfo li = parseInsertLog(log);
                 long xid = li.xid;
-                if(tm.isActive(xid)) {
+                if(txm.isActive(xid)) {
                     if(!logCache.containsKey(xid)) {
                         logCache.put(xid, new ArrayList<>());
                     }
@@ -116,7 +116,7 @@ public class Recover {
             } else {
                 UpdateLogInfo xi = parseUpdateLog(log);
                 long xid = xi.xid;
-                if(tm.isActive(xid)) {
+                if(txm.isActive(xid)) {
                     if(!logCache.containsKey(xid)) {
                         logCache.put(xid, new ArrayList<>());
                     }
@@ -136,7 +136,7 @@ public class Recover {
                     doUpdateLog(pc, log, UNDO);
                 }
             }
-            tm.abort(entry.getKey());
+            txm.abort(entry.getKey());
         }
     }
 

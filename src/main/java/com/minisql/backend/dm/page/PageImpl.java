@@ -3,7 +3,7 @@ package com.minisql.backend.dm.page;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-import com.minisql.backend.dm.pageCache.PageCache;
+import com.minisql.backend.dm.page.cache.PageCache;
 
 public class PageImpl implements Page {
     private int pageNumber;

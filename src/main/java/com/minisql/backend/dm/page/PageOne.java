@@ -2,7 +2,7 @@ package com.minisql.backend.dm.page;
 
 import java.util.Arrays;
 
-import com.minisql.backend.dm.pageCache.PageCache;
+import com.minisql.backend.dm.page.cache.PageCache;
 import com.minisql.backend.utils.RandomUtil;
 
 /**

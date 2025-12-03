@@ -2,46 +2,47 @@ package com.minisql.backend.vm;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import com.minisql.backend.common.AbstractCache;
 import com.minisql.backend.dm.DataManager;
-import com.minisql.backend.tm.TransactionManager;
-import com.minisql.backend.tm.TransactionManagerImpl;
+import com.minisql.backend.txm.TransactionManager;
+import com.minisql.backend.txm.TransactionManagerImpl;
 import com.minisql.backend.utils.Panic;
 import com.minisql.common.Error;
 
 public class VersionManagerImpl extends AbstractCache<Entry> implements VersionManager {
 
-    TransactionManager tm;
+    TransactionManager txm;
     DataManager dm;
     Map<Long, Transaction> activeTransactionMap;
     Lock lock;
-    LockTable lt;
+    LockTable lockTable;
 
-    public VersionManagerImpl(TransactionManager tm, DataManager dm) {
+    public VersionManagerImpl(TransactionManager txm, DataManager dm) {
         super(0);
-        this.tm = tm;
+        this.txm = txm;
         this.dm = dm;
         this.activeTransactionMap = new HashMap<>();
         // 创建超级事务 xid = 0
         activeTransactionMap.put(
                 TransactionManagerImpl.SUPER_XID,
-                Transaction.newTransaction(TransactionManagerImpl.SUPER_XID, IsolationLevel.READ_COMMITTED, null)
+                Transaction.newTransaction(TransactionManagerImpl.SUPER_XID, IsolationLevel.defaultLevel(), null)
         );
         this.lock = new ReentrantLock();
-        this.lt = new LockTable();
+        this.lockTable = new LockTable();
     }
 
     @Override
     public byte[] read(long xid, long uid) throws Exception {
         lock.lock();
-        Transaction t = activeTransactionMap.get(xid);
+        Transaction tx = activeTransactionMap.get(xid);
         lock.unlock();
 
-        if(t.err != null) {
-            throw t.err;
+        if(tx.err != null) {
+            throw tx.err;
         }
 
         Entry entry = null;
@@ -55,7 +56,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
             }
         }
         try {
-            if(Visibility.isVisible(tm, t, entry)) {
+            if(Visibility.isVisible(txm, tx, entry)) {
                 return entry.data();
             } else {
                 return null;
@@ -68,11 +69,11 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     @Override
     public long insert(long xid, byte[] data) throws Exception {
         lock.lock();
-        Transaction t = activeTransactionMap.get(xid);
+        Transaction tx = activeTransactionMap.get(xid);
         lock.unlock();
 
-        if(t.err != null) {
-            throw t.err;
+        if(tx.err != null) {
+            throw tx.err;
         }
 
         byte[] raw = Entry.wrapEntryRaw(xid, data);
@@ -82,12 +83,13 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     @Override
     public boolean delete(long xid, long uid) throws Exception {
         lock.lock();
-        Transaction t = activeTransactionMap.get(xid);
+        Transaction tx = activeTransactionMap.get(xid);
         lock.unlock();
 
-        if(t.err != null) {
-            throw t.err;
+        if(tx.err != null) {
+            throw tx.err;
         }
+
         Entry entry = null;
         try {
             entry = super.get(uid);
@@ -98,35 +100,39 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
                 throw e;
             }
         }
+
         try {
-            if(!Visibility.isVisible(tm, t, entry)) {
+            if(!Visibility.isVisible(txm, tx, entry)) {
                 return false;
             }
-            Lock l = null;
+            CountDownLatch latch = null;
             try {
-                l = lt.add(xid, uid);
+                latch = lockTable.add(xid, uid);
             } catch(Exception e) {
-                t.err = Error.ConcurrentUpdateException;
+                // 死锁等情况
+                tx.err = Error.ConcurrentUpdateException;
                 internAbort(xid, true);
-                t.autoAborted = true;
-                throw t.err;
-            }
-            if(l != null) {
-                l.lock();
-                l.unlock();
+                tx.autoAborted = true;
+                throw tx.err;
             }
 
+            // 需要等待，阻塞在这里，直到别的事务把资源让给我
+            if (latch != null) {
+                latch.await();   // delete 已经 throws Exception，所以这里直接抛出去即可
+            }
+
+            // 从这里往下，说明当前 xid 已经拿到了 uid 的"删除权"
             if(entry.getXmax() == xid) {
                 return false;
             }
 
-            if(Visibility.isVersionSkip(tm, t, entry)) {
-                t.err = Error.ConcurrentUpdateException;
+            if(Visibility.isVersionSkip(txm, tx, entry)) {
+                tx.err = Error.ConcurrentUpdateException;
                 internAbort(xid, true);
-                t.autoAborted = true;
-                throw t.err;
+                tx.autoAborted = true;
+                throw tx.err;
             }
-            // 设置xmax为当前事务xid
+            // 设置 xmax 实现逻辑删除
             entry.setXmax(xid);
             return true;
 
@@ -135,14 +141,21 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
         }
     }
 
+    /**
+     * 开启事务
+     * @param level 事务隔离级别
+     * @return 事务ID
+     */
     @Override
     public long begin(IsolationLevel level) {
+        // 整个过程是原子的
+        // 获取xid → 创建新事务 → 把新事务放进已激活事务map
         lock.lock();
         try {
             // 开启事务，获取xid
-            long xid = tm.begin();
-            Transaction t = Transaction.newTransaction(xid, level, activeTransactionMap);
-            activeTransactionMap.put(xid, t);
+            long xid = txm.begin();
+            Transaction tx = Transaction.newTransaction(xid, level, activeTransactionMap);
+            activeTransactionMap.put(xid, tx);
             return xid;
         } finally {
             lock.unlock();
@@ -152,12 +165,12 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     @Override
     public void commit(long xid) throws Exception {
         lock.lock();
-        Transaction t = activeTransactionMap.get(xid);
+        Transaction tx = activeTransactionMap.get(xid);
         lock.unlock();
 
         try {
-            if(t.err != null) {
-                throw t.err;
+            if(tx.err != null) {
+                throw tx.err;
             }
         } catch(NullPointerException n) {
             System.out.println(xid);
@@ -169,8 +182,8 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
         activeTransactionMap.remove(xid);
         lock.unlock();
 
-        lt.remove(xid);
-        tm.commit(xid);
+        lockTable.remove(xid);
+        txm.commit(xid);
     }
 
     @Override
@@ -180,15 +193,15 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
 
     private void internAbort(long xid, boolean autoAborted) {
         lock.lock();
-        Transaction t = activeTransactionMap.get(xid);
+        Transaction tx = activeTransactionMap.get(xid);
         if(!autoAborted) {
             activeTransactionMap.remove(xid);
         }
         lock.unlock();
 
-        if(t.autoAborted) return;
-        lt.remove(xid);
-        tm.abort(xid);
+        if(tx.autoAborted) return;
+        lockTable.remove(xid);
+        txm.abort(xid);
     }
 
     public void releaseEntry(Entry entry) {
