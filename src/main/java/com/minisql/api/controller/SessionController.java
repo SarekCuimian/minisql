@@ -9,10 +9,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
-import com.minisql.api.dto.SessionCreateResponse;
-import com.minisql.api.dto.SqlExecRequest;
-import com.minisql.api.dto.SqlExecResponse;
+import com.minisql.api.entity.response.SessionCreateResponse;
+import com.minisql.api.entity.request.SqlExecRequest;
+import com.minisql.api.entity.response.SqlExecResponse;
 import com.minisql.api.service.SqlService;
 import com.minisql.api.exception.SessionNotFoundException;
 import com.minisql.api.session.SessionManager;
@@ -39,18 +38,20 @@ public class SessionController {
             String sessionId = sessionManager.createSession();
             return ResponseEntity.ok(new SessionCreateResponse(sessionId, System.currentTimeMillis()));
         } catch (IOException e) {
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "创建 session 失败: " + e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
         }
     }
 
     @PostMapping("/{sessionId}/sql")
-    public ResponseEntity<SqlExecResponse> executeWithSession(@PathVariable String sessionId,
-                                                              @Valid @RequestBody SqlExecRequest request) {
+    public ResponseEntity<SqlExecResponse<?>> executeWithSession(@PathVariable String sessionId,
+                                                                 @Valid @RequestBody SqlExecRequest request) {
         try {
-            SqlExecResponse response = sqlService.executeWithSession(sessionId, request.getSql());
+            // boolean text = request.getFormat() == null || request.getFormat().isText();
+            SqlExecResponse<?> response = sqlService.executeWithSession(sessionId, request.getSql(), request.getFormat());
             return ResponseEntity.ok(response);
         } catch (SessionNotFoundException ex) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, ex.getMessage(), ex);
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(SqlExecResponse.failure(ex.getMessage()));
         }
     }
 
@@ -60,6 +61,6 @@ public class SessionController {
         if (removed) {
             return ResponseEntity.noContent().build();
         }
-        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Session 不存在: " + sessionId);
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
     }
 }

@@ -3,10 +3,11 @@ package com.minisql.api.service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import com.minisql.backend.utils.format.ConsoleResultFormatter;
-import com.minisql.backend.utils.format.ExecResult;
-import com.minisql.backend.utils.format.ResultFormatter;
-import com.minisql.api.dto.SqlExecResponse;
+import com.minisql.common.ConsoleResultFormatter;
+import com.minisql.common.ExecResult;
+import com.minisql.common.ResultFormatter;
+import com.minisql.api.entity.enums.ResponseFormat;
+import com.minisql.api.entity.response.SqlExecResponse;
 import com.minisql.api.session.MiniSqlSession;
 import com.minisql.api.session.SessionManager;
 
@@ -24,17 +25,23 @@ public class SqlService {
         this.sessionRegistry = sessionManager;
     }
 
-    public SqlExecResponse executeWithSession(String sessionId, String sql) {
+    public SqlExecResponse<?> executeWithSession(String sessionId, String sql, ResponseFormat format) {
         MiniSqlSession session = sessionRegistry.getSession(sessionId);
-        return doExecute(session, sql);
+        return doExecute(session, sql, format);
     }
 
-    private SqlExecResponse doExecute(MiniSqlSession session, String sql) {
+    private SqlExecResponse<?> doExecute(MiniSqlSession session, String sql, ResponseFormat format) {
         try {
             ExecResult result = session.execute(sql);
-            byte[] formatted = formatter.format(result);
-            return SqlExecResponse.success(new String(formatted, StandardCharsets.UTF_8));
+            // 返回文本化结果
+            if(format == ResponseFormat.TEXT) {
+                String text = new String(formatter.format(result), StandardCharsets.UTF_8);
+                return SqlExecResponse.success(text);
+            }
+            // 返回结构化结果，前端可自行渲染 headers/rows/message 等字段
+            return SqlExecResponse.success(result);
         } catch (Exception ex) {
+            // 捕获所有异常，返回错误信息
             LOGGER.error("执行 SQL 失败: {}", sql, ex);
             return SqlExecResponse.failure(ex.getMessage());
         }

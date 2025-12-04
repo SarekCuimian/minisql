@@ -1,4 +1,4 @@
-package com.minisql.backend.utils.format;
+package com.minisql.common;
 
 import java.util.ArrayList;
 import java.util.Collections;

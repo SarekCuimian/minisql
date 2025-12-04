@@ -110,6 +110,15 @@ public class Tokenizer {
         return stat[pos];
     }
 
+    /** 查看当前位置之后的下一个 byte，不移动游标 */
+    private Byte peekNextByte() {
+        int nextPos = pos + 1;
+        if(nextPos >= stat.length) {
+            return null;
+        }
+        return stat[nextPos];
+    }
+
     /**
      * 读取下一个 token 并推进游标。
      */
@@ -135,9 +144,45 @@ public class Tokenizer {
             popByte();
         }
         byte b = peekByte();
-        if(isSymbol(b)) {
-            popByte();
+        // 支持带符号的数字，如 -1
+        if(b == '-') {
+            Byte nb = peekNextByte();
+            if(nb != null && isDigit(nb)) {
+                popByte(); // consume '-'
+                StringBuilder sb = new StringBuilder("-");
+                while(true) {
+                    Byte c = peekByte();
+                    if(c == null || !isDigit(c)) {
+                        if(c != null && isBlank(c)) {
+                            popByte();
+                        }
+                        return sb.toString();
+                    }
+                    sb.append(new String(new byte[]{c}));
+                    popByte();
+                }
+            }
+        }
+        if (isSymbol(b)) {
+            popByte(); // 消费当前符号
+
+            // 尝试识别紧挨着的双字符运算符 >= <= != <>
+            if (b == '>' || b == '<' || b == '!') {
+                Byte nb = peekByte();   // 只看下一个字符，不跳过空白
+                if (nb != null) {
+                    if (nb == '=') {
+                        popByte();
+                        return new String(new byte[]{b, '='});  // >=  <=  !=
+                    }
+                    if (b == '<' && nb == '>') {
+                        popByte();
+                        return "<>";                         
+                    }
+                }
+            }
+            // 否则就是单字符符号：>  <  =  !  * , ( ) ;
             return new String(new byte[]{b});
+            
         } else if(b == '"' || b == '\'') {
             return nextQuoteState();
         } else if(isAlphaBeta(b) || isDigit(b)) {
@@ -202,8 +247,8 @@ public class Tokenizer {
 
     /** 判断是否为 SQL 特殊符号 */
     static boolean isSymbol(byte b) {
-        return (b == '>' || b == '<' || b == '=' || b == '*' ||
-                b == ',' || b == '(' || b == ')' || b == ';');
+        return (b == '>' || b == '<' || b == '=' || b == '!' || 
+                b == '*' || b == ',' || b == '(' || b == ')' || b == ';');
     }
 
     /** 判断是否空白字符（空格/tab/换行） */

@@ -1,7 +1,7 @@
 package com.minisql.api.session;
 
-import com.minisql.backend.utils.format.ExecResult;
-import com.minisql.backend.utils.format.ExecResultCodec;
+import com.minisql.common.ExecResult;
+import com.minisql.common.ExecResultCodec;
 import com.minisql.transport.Encoder;
 import com.minisql.transport.Packager;
 import com.minisql.transport.Transporter;
@@ -34,12 +34,13 @@ public class MiniSqlSessionImpl implements MiniSqlSession {
         if(statement.isEmpty()) {
             throw new IllegalArgumentException("SQL must not be empty");
         }
+        // 保障单个 Session 的 Socket 线程安全
         synchronized (ioLock) {
             Package req = new Package(statement.getBytes(StandardCharsets.UTF_8), null);
             packager.send(req);
-            Package resp = packager.receive();
-            if (resp.getErr() != null) {
-                throw resp.getErr();
+            Package resp = packager.receive(); 
+            if (resp.getExc() != null) {
+                throw resp.getExc();
             }
             return ExecResultCodec.decode(resp.getData());
         }

@@ -11,7 +11,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import com.google.common.primitives.Bytes;
 
 import com.minisql.backend.utils.Panic;
-import com.minisql.backend.utils.Parser;
+import com.minisql.backend.utils.ByteUtil;
 import com.minisql.common.Error;
 
 /**
@@ -75,7 +75,7 @@ public class LoggerImpl implements Logger {
         } catch (IOException e) {
             Panic.panic(e);
         }
-        int xChecksum = Parser.parseInt(raw.array());
+        int xChecksum = ByteUtil.parseInt(raw.array());
         this.fileSize = size;
         this.xChecksum = xChecksum;
 
@@ -139,7 +139,7 @@ public class LoggerImpl implements Logger {
         this.xChecksum = calChecksum(this.xChecksum, log);
         try {
             fc.position(0);
-            fc.write(ByteBuffer.wrap(Parser.int2Byte(xChecksum)));
+            fc.write(ByteBuffer.wrap(ByteUtil.int2Byte(xChecksum)));
             fc.force(false);
         } catch(IOException e) {
             Panic.panic(e);
@@ -147,8 +147,8 @@ public class LoggerImpl implements Logger {
     }
 
     private byte[] wrapLog(byte[] data) {
-        byte[] checksum = Parser.int2Byte(calChecksum(0, data));
-        byte[] size = Parser.int2Byte(data.length);
+        byte[] checksum = ByteUtil.int2Byte(calChecksum(0, data));
+        byte[] size = ByteUtil.int2Byte(data.length);
         return Bytes.concat(size, checksum, data);
     }
 
@@ -176,7 +176,7 @@ public class LoggerImpl implements Logger {
         } catch(IOException e) {
             Panic.panic(e);
         }
-        int size = Parser.parseInt(tmp.array());
+        int size = ByteUtil.parseInt(tmp.array());
         if(position + size + OF_DATA > fileSize) {
             return null;
         }
@@ -191,7 +191,7 @@ public class LoggerImpl implements Logger {
 
         byte[] log = buf.array();
         int checkSum1 = calChecksum(0, Arrays.copyOfRange(log, OF_DATA, log.length));
-        int checkSum2 = Parser.parseInt(Arrays.copyOfRange(log, OF_CHECKSUM, OF_DATA));
+        int checkSum2 = ByteUtil.parseInt(Arrays.copyOfRange(log, OF_CHECKSUM, OF_DATA));
         if(checkSum1 != checkSum2) {
             return null;
         }

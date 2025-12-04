@@ -6,7 +6,7 @@ import com.google.common.primitives.Bytes;
 
 import com.minisql.backend.common.SubArray;
 import com.minisql.backend.dm.dataitem.DataItem;
-import com.minisql.backend.utils.Parser;
+import com.minisql.backend.utils.ByteUtil;
 
 /**
  * VM向上层抽象出entry
@@ -44,7 +44,7 @@ public class Entry {
      * [XMIN] [XMAX] [data]
      */
     public static byte[] wrapEntryRaw(long xid, byte[] data) {
-        byte[] xmin = Parser.long2Byte(xid);
+        byte[] xmin = ByteUtil.long2Byte(xid);
         byte[] xmax = new byte[8];
         return Bytes.concat(xmin, xmax, data);
     }
@@ -74,7 +74,7 @@ public class Entry {
         dataItem.rLock();
         try {
             SubArray sa = dataItem.data();
-            return Parser.parseLong(Arrays.copyOfRange(sa.raw, sa.start+OF_XMIN, sa.start+OF_XMAX));
+            return ByteUtil.parseLong(Arrays.copyOfRange(sa.raw, sa.start+OF_XMIN, sa.start+OF_XMAX));
         } finally {
             dataItem.rUnLock();
         }
@@ -84,7 +84,7 @@ public class Entry {
         dataItem.rLock();
         try {
             SubArray sa = dataItem.data();
-            return Parser.parseLong(Arrays.copyOfRange(sa.raw, sa.start+OF_XMAX, sa.start+OF_DATA));
+            return ByteUtil.parseLong(Arrays.copyOfRange(sa.raw, sa.start+OF_XMAX, sa.start+OF_DATA));
         } finally {
             dataItem.rUnLock();
         }
@@ -94,7 +94,7 @@ public class Entry {
         dataItem.before();
         try {
             SubArray sa = dataItem.data();
-            System.arraycopy(Parser.long2Byte(xid), 0, sa.raw, sa.start+OF_XMAX, 8);
+            System.arraycopy(ByteUtil.long2Byte(xid), 0, sa.raw, sa.start+OF_XMAX, 8);
         } finally {
             dataItem.after(xid);
         }

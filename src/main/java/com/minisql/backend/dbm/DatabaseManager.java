@@ -19,12 +19,15 @@ import com.minisql.backend.utils.Panic;
 import com.minisql.backend.vm.VersionManager;
 import com.minisql.backend.vm.VersionManagerImpl;
 import com.minisql.common.Error;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 管理多个数据库实例，负责创建、打开、删除以及复用 TableManager 等组件。
  */
 public class DatabaseManager {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(DatabaseManager.class);
     private static final String DEFAULT_DATABASE = "system";
 
     private final Path root;
@@ -165,11 +168,16 @@ public class DatabaseManager {
             throw Error.DatabaseNotFoundException;
         }
         String basePath = databaseBasePath(name);
-        TransactionManager txm = TransactionManager.open(basePath);
-        DataManager dm = DataManager.open(basePath, mem, txm);
-        VersionManager vm = new VersionManagerImpl(txm, dm);
-        TableManager tbm = TableManager.open(basePath, vm, dm);
-        return new DatabaseContext(name, basePath, txm, dm, vm, tbm);
+        try {
+            TransactionManager txm = TransactionManager.open(basePath);
+            DataManager dm = DataManager.open(basePath, mem, txm);
+            VersionManager vm = new VersionManagerImpl(txm, dm);
+            TableManager tbm = TableManager.open(basePath, vm, dm);
+            return new DatabaseContext(name, basePath, txm, dm, vm, tbm);
+        } catch (Exception e) {
+            LOGGER.error("Failed to open database '{}' at {}: {}", name, basePath, e.getMessage(), e);
+            throw e;
+        }
     }
 
     private DatabaseContext openContextUnchecked(String name) {

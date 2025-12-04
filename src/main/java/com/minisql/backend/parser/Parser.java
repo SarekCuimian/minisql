@@ -19,6 +19,8 @@ import com.minisql.backend.parser.statement.Update;
 import com.minisql.backend.parser.statement.CreateDatabase;
 import com.minisql.backend.parser.statement.Use;
 import com.minisql.backend.parser.statement.Where;
+import com.minisql.backend.tbm.CompareOperator;
+import com.minisql.backend.tbm.LogicOperator;
 import com.minisql.backend.vm.IsolationLevel;
 import com.minisql.common.Error;
 
@@ -31,7 +33,7 @@ public class Parser {
         Object stat = null;
         Exception statErr = null;
         try {
-            switch(token) {
+            switch(token.toLowerCase()) {
                 case "begin":
                     stat = parseBegin(tokenizer);
                     break;
@@ -107,13 +109,13 @@ public class Parser {
                 throw Error.InvalidCommandException;
             }
             return show;
-        } else if("tables".equals(tmp)) {
+        } else if(eq(tmp, "tables")) {
             tokenizer.pop();
             if(!reachStatementEnd(tokenizer)) {
                 throw Error.InvalidCommandException;
             }
             return show;
-        } else if("databases".equals(tmp)) {
+        } else if(eq(tmp, "databases")) {
             tokenizer.pop();
             show.target = Show.Target.DATABASES;
             if(!reachStatementEnd(tokenizer)) {
@@ -146,7 +148,7 @@ public class Parser {
         update.tableName = tokenizer.peek();
         tokenizer.pop();
 
-        if(!"set".equals(tokenizer.peek())) {
+        if(!eq(tokenizer.peek(), "set")) {
             throw Error.InvalidCommandException;
         }
         tokenizer.pop();
@@ -182,7 +184,7 @@ public class Parser {
     private static Delete parseDelete(Tokenizer tokenizer) throws Exception {
         Delete delete = new Delete();
 
-        if(!"from".equals(tokenizer.peek())) {
+        if(!eq(tokenizer.peek(), "from")) {
             throw Error.InvalidCommandException;
         }
         tokenizer.pop();
@@ -201,7 +203,7 @@ public class Parser {
     private static Insert parseInsert(Tokenizer tokenizer) throws Exception {
         Insert insert = new Insert();
 
-        if(!"into".equals(tokenizer.peek())) {
+        if(!eq(tokenizer.peek(), "into")) {
             throw Error.InvalidCommandException;
         }
         tokenizer.pop();
@@ -213,28 +215,44 @@ public class Parser {
         insert.tableName = tableName;
         tokenizer.pop();
 
-        if(!"values".equals(tokenizer.peek())) {
+        if(!eq(tokenizer.peek(), "values")) {
             throw Error.InvalidCommandException;
         }
+        tokenizer.pop(); // consume 'values'
+        if(!"(".equals(tokenizer.peek())) {
+            throw Error.InvalidCommandException;
+        }
+        tokenizer.pop(); // consume '('
 
         List<String> values = new ArrayList<>();
+        boolean hasValue = false;
         while(true) {
-            tokenizer.pop();
-            String value = tokenizer.peek();
-            if("".equals(value)) {
-                break;
-            } else if(";".equals(value)) {
+            String token = tokenizer.peek();
+            if(")".equals(token)) {
                 tokenizer.pop();
-                if(!reachStatementEnd(tokenizer)) {
-                    throw Error.InvalidCommandException;
-                }
                 break;
-            } else {
-                values.add(value);
             }
+            if(",".equals(token)) {
+                tokenizer.pop();
+                continue;
+            }
+            if("".equals(token) || ";".equals(token)) {
+                throw Error.InvalidCommandException;
+            }
+            values.add(token);
+            hasValue = true;
+            tokenizer.pop();
         }
-        insert.values = values.toArray(new String[values.size()]);
-
+        if(!hasValue) {
+            throw Error.InvalidCommandException;
+        }
+        if(";".equals(tokenizer.peek())) {
+            tokenizer.pop();
+        }
+        if(!reachStatementEnd(tokenizer)) {
+            throw Error.InvalidCommandException;
+        }
+        insert.values = values.toArray(new String[0]);
         return insert;
     }
 
@@ -263,7 +281,7 @@ public class Parser {
         }
         read.fields = fields.toArray(new String[fields.size()]);
 
-        if(!"from".equals(tokenizer.peek())) {
+        if(!eq(tokenizer.peek(), "from")) {
             throw Error.InvalidCommandException;
         }
         tokenizer.pop();
@@ -295,7 +313,7 @@ public class Parser {
     private static Where parseWhere(Tokenizer tokenizer) throws Exception {
         Where where = new Where();
 
-        if(!"where".equals(tokenizer.peek())) {
+        if(!eq(tokenizer.peek(), "where")) {
             throw Error.InvalidCommandException;
         }
         tokenizer.pop();
@@ -303,12 +321,8 @@ public class Parser {
         SingleExpression exp1 = parseSingleExp(tokenizer);
         where.singleExp1 = exp1;
 
-        String logicOp = tokenizer.peek();
-        if("".equals(logicOp)) {
-            where.logicOp = logicOp;
-            return where;
-        }
-        if(";".equals(logicOp)) {
+        String logicOpToken = tokenizer.peek();
+        if(";".equals(logicOpToken)) {
             tokenizer.pop();
             where.logicOp = "";
             if(!reachStatementEnd(tokenizer)) {
@@ -316,11 +330,14 @@ public class Parser {
             }
             return where;
         }
-        if(!isLogicOp(logicOp)) {
+        LogicOperator lop = LogicOperator.from(logicOpToken);
+        if(lop == LogicOperator.NONE && !"".equals(logicOpToken)) {
             throw Error.InvalidCommandException;
         }
-        where.logicOp = logicOp;
-        tokenizer.pop();
+        where.logicOp = lop.symbol;
+        if(lop != LogicOperator.NONE) {
+            tokenizer.pop();
+        }
 
         SingleExpression exp2 = parseSingleExp(tokenizer);
         where.singleExp2 = exp2;
@@ -332,41 +349,26 @@ public class Parser {
     }
 
     private static SingleExpression parseSingleExp(Tokenizer tokenizer) throws Exception {
-        SingleExpression exp = new SingleExpression();
-        
         String field = tokenizer.peek();
         if(!isName(field)) {
             throw Error.InvalidCommandException;
         }
-        exp.field = field;
         tokenizer.pop();
 
         String op = tokenizer.peek();
-        if(!isCmpOp(op)) {
-            throw Error.InvalidCommandException;
-        }
-        exp.compareOp = op;
+        CompareOperator operator = CompareOperator.from(op);
         tokenizer.pop();
 
-        exp.value = tokenizer.peek();
+        String value = tokenizer.peek();
         tokenizer.pop();
-        return exp;
+        return new SingleExpression(field, operator, value);
     }
-
-    private static boolean isCmpOp(String op) {
-        return ("=".equals(op) || ">".equals(op) || "<".equals(op));
-    }
-
-    private static boolean isLogicOp(String op) {
-        return ("and".equals(op) || "or".equals(op));
-    }
-
     private static Object parseDrop(Tokenizer tokenizer) throws Exception {
         String target = tokenizer.peek();
-        if("table".equals(target)) {
+        if(eq(target, "table")) {
             tokenizer.pop();
             return parseDropTable(tokenizer);
-        } else if("database".equals(target)) {
+        } else if(eq(target, "database")) {
             tokenizer.pop();
             return parseDropDatabase(tokenizer);
         }
@@ -405,10 +407,10 @@ public class Parser {
 
     private static Object parseCreate(Tokenizer tokenizer) throws Exception {
         String target = tokenizer.peek();
-        if("table".equals(target)) {
+        if(eq(target, "table")) {
             tokenizer.pop();
             return parseCreateTable(tokenizer);
-        } else if("database".equals(target)) {
+        } else if(eq(target, "database")) {
             tokenizer.pop();
             return parseCreateDatabase(tokenizer);
         }
@@ -422,74 +424,133 @@ public class Parser {
             throw Error.InvalidCommandException;
         }
         create.tableName = name;
+        tokenizer.pop(); // consume table name
+
+        if(!"(".equals(tokenizer.peek())) {
+            throw Error.InvalidCommandException;
+        }
+        tokenizer.pop(); // consume '('
 
         List<String> fNames = new ArrayList<>();
         List<String> fTypes = new ArrayList<>();
         List<String> uniques = new ArrayList<>();
+        List<String> indexes = new ArrayList<>();
+        boolean primaryDeclared = false;
+
         while(true) {
-            tokenizer.pop();
-            String field = tokenizer.peek();
-            if("(".equals(field)) {
+            String token = tokenizer.peek();
+            if(")".equals(token)) {
+                tokenizer.pop();
                 break;
             }
-
-            if(!isName(field)) {
-                throw Error.InvalidCommandException;
+            if(",".equals(token)) {
+                tokenizer.pop();
+                continue;
             }
 
+            if(eq(token, "index")) {
+                // table-level index: INDEX (col1, col2, ...)
+                tokenizer.pop();
+                if(!"(".equals(tokenizer.peek())) {
+                    throw Error.InvalidCommandException;
+                }
+                tokenizer.pop();
+                boolean hasField = false;
+                while(true) {
+                    String fn = tokenizer.peek();
+                    if(")".equals(fn)) {
+                        if(!hasField) {
+                            throw Error.InvalidCommandException;
+                        }
+                        tokenizer.pop();
+                        break;
+                    }
+                    if(",".equals(fn)) {
+                        tokenizer.pop();
+                        continue;
+                    }
+                    if(!isName(fn)) {
+                        throw Error.InvalidCommandException;
+                    }
+                    indexes.add(fn);
+                    hasField = true;
+                    tokenizer.pop();
+                }
+                // after table-level index, expect , or ) handled by loop
+                continue;
+            }
+
+            // column definition: name type [PRIMARY KEY] [UNIQUE] [INDEX]
+            if(!isName(token)) {
+                throw Error.InvalidCommandException;
+            }
+            String fieldName = token;
             tokenizer.pop();
+
             String fieldType = tokenizer.peek();
             if(!isType(fieldType)) {
                 throw Error.InvalidCommandException;
             }
-            fNames.add(field);
+            tokenizer.pop();
+
+            boolean indexed = false;
+            boolean unique = false;
+            boolean primary = false;
+
+            // consume optional constraints in any order
+            while(true) {
+                String next = tokenizer.peek();
+                if(eq(next, "primary")) {
+                    tokenizer.pop();
+                    if(!eq(tokenizer.peek(), "key")) {
+                        throw Error.InvalidCommandException;
+                    }
+                    tokenizer.pop();
+                    primary = true;
+                    unique = true;
+                    indexed = true;
+                    if(primaryDeclared) {
+                        throw Error.InvalidCommandException;
+                    }
+                    primaryDeclared = true;
+                    continue;
+                } else if(eq(next, "unique")) {
+                    tokenizer.pop();
+                    unique = true;
+                    indexed = true;
+                    continue;
+                } else if(eq(next, "index")) {
+                    tokenizer.pop();
+                    indexed = true;
+                    continue;
+                }
+                break;
+            }
+
+            fNames.add(fieldName);
             fTypes.add(fieldType);
-            tokenizer.pop();
-
-            if("unique".equals(tokenizer.peek())) {
-                uniques.add(field);
-                tokenizer.pop();
+            if(unique || primary) {
+                uniques.add(fieldName);
+            }
+            if(indexed) {
+                indexes.add(fieldName);
             }
 
-            String next = tokenizer.peek();
-            if(",".equals(next)) {
-                continue;
-            } else if("".equals(next)) {
-                throw Error.TableNoIndexException;
-            } else if("(".equals(next)) {
-                break;
-            } else {
+            // after a column def, expect ',' or ')' handled by loop
+            String sep = tokenizer.peek();
+            if(!",".equals(sep) && !")".equals(sep)) {
                 throw Error.InvalidCommandException;
             }
         }
-        create.fieldName = fNames.toArray(new String[fNames.size()]);
-        create.fieldType = fTypes.toArray(new String[fTypes.size()]);
-        create.unique = uniques.toArray(new String[uniques.size()]);
-
-        tokenizer.pop();
-        if(!"index".equals(tokenizer.peek())) {
-            throw Error.InvalidCommandException;
-        }
-
-        List<String> indexes = new ArrayList<>();
-        while(true) {
-            tokenizer.pop();
-            String field = tokenizer.peek();
-            if(")".equals(field)) {
-                break;
-            }
-            if(!isName(field)) {
-                throw Error.InvalidCommandException;
-            } else {
-                indexes.add(field);
-            }
-        }
-        create.index = indexes.toArray(new String[indexes.size()]);
-        tokenizer.pop();
 
         if(!reachStatementEnd(tokenizer)) {
             throw Error.InvalidCommandException;
         }
+
+        create.fieldName = fNames.toArray(new String[0]);
+        create.fieldType = fTypes.toArray(new String[0]);
+        create.unique = uniques.toArray(new String[0]);
+        create.index = indexes.toArray(new String[0]);
         return create;
     }
 
@@ -508,8 +569,8 @@ public class Parser {
     }
 
     private static boolean isType(String tp) {
-        return ("int32".equals(tp) || "int64".equals(tp) ||
-        "string".equals(tp));
+        return ("int32".equalsIgnoreCase(tp) || "int64".equalsIgnoreCase(tp) ||
+        "string".equalsIgnoreCase(tp));
     }
 
     private static Abort parseAbort(Tokenizer tokenizer) throws Exception {
@@ -539,30 +600,30 @@ public class Parser {
             }
             return begin;
         }
-        if(!"isolation".equals(token)) {
+        if(!eq(token, "isolation")) {
             throw Error.InvalidCommandException;
         }
 
         tokenizer.pop();
         String levelKeyword = tokenizer.peek();
-        if(!"level".equals(levelKeyword)) {
+        if(!eq(levelKeyword, "level")) {
             throw Error.InvalidCommandException;
         }
         tokenizer.pop();
 
         String isolation = tokenizer.peek();
-        if("read".equals(isolation)) {
+        if(eq(isolation, "read")) {
             tokenizer.pop();
             String committed = tokenizer.peek();
-            if(!"committed".equals(committed)) {
+            if(!eq(committed, "committed")) {
                 throw Error.InvalidCommandException;
             }
             tokenizer.pop();
             begin.isolationLevel = IsolationLevel.READ_COMMITTED;
-        } else if("repeatable".equals(isolation)) {
+        } else if(eq(isolation, "repeatable")) {
             tokenizer.pop();
             String read = tokenizer.peek();
-            if(!"read".equals(read)) {
+            if(!eq(read, "read")) {
                 throw Error.InvalidCommandException;
             }
             tokenizer.pop();
@@ -613,5 +674,10 @@ public class Parser {
             }
             return "".equals(next);
         }
+    }
+
+    /** 大小写不敏感比较 */
+    private static boolean eq(String token, String keyword) {
+        return keyword.equalsIgnoreCase(token);
     }
 }

@@ -10,7 +10,7 @@ import com.minisql.backend.parser.statement.SingleExpression;
 import com.minisql.backend.txm.TransactionManagerImpl;
 import com.minisql.backend.utils.Panic;
 import com.minisql.backend.utils.ParseStringRes;
-import com.minisql.backend.utils.Parser;
+import com.minisql.backend.utils.ByteUtil;
 import com.minisql.common.Error;
 
 /**
@@ -54,13 +54,13 @@ public class Field {
 
     private Field parseSelf(byte[] raw) {
         int position = 0;
-        ParseStringRes res = Parser.parseString(raw);
+        ParseStringRes res = ByteUtil.parseString(raw);
         fieldName = res.str;
         position += res.next;
-        res = Parser.parseString(Arrays.copyOfRange(raw, position, raw.length));
+        res = ByteUtil.parseString(Arrays.copyOfRange(raw, position, raw.length));
         fieldType = res.str;
         position += res.next;
-        this.index = Parser.parseLong(Arrays.copyOfRange(raw, position, position+8));
+        this.index = ByteUtil.parseLong(Arrays.copyOfRange(raw, position, position+8));
         if(index != 0) {
             try {
                 bt = BPlusTree.load(index, ((TableManagerImpl)tb.tbm).dm);
@@ -94,9 +94,9 @@ public class Field {
     }
 
     private void persistSelf(long xid) throws Exception {
-        byte[] nameRaw = Parser.string2Byte(fieldName);
-        byte[] typeRaw = Parser.string2Byte(fieldType);
-        byte[] indexRaw = Parser.long2Byte(index);
+        byte[] nameRaw = ByteUtil.string2Byte(fieldName);
+        byte[] typeRaw = ByteUtil.string2Byte(fieldType);
+        byte[] indexRaw = ByteUtil.long2Byte(index);
         byte[] uniqueRaw = new byte[] {(byte)(unique?1:0)};
         this.uid = ((TableManagerImpl)tb.tbm).vm.insert(xid, Bytes.concat(nameRaw, typeRaw, indexRaw, uniqueRaw));
     }
@@ -159,7 +159,7 @@ public class Field {
         long uid = 0;
         switch(fieldType) {
             case "string":
-                uid = Parser.str2Uid((String)key);
+                uid = ByteUtil.str2Uid((String)key);
                 break;
             case "int32":
                 int uint = (int)key;
@@ -175,13 +175,13 @@ public class Field {
         byte[] raw = null;
         switch(fieldType) {
             case "int32":
-                raw = Parser.int2Byte((int)v);
+                raw = ByteUtil.int2Byte((int)v);
                 break;
             case "int64":
-                raw = Parser.long2Byte((long)v);
+                raw = ByteUtil.long2Byte((long)v);
                 break;
             case "string":
-                raw = Parser.string2Byte((String)v);
+                raw = ByteUtil.string2Byte((String)v);
                 break;
         }
         return raw;
@@ -196,15 +196,15 @@ public class Field {
         ParseValueRes res = new ParseValueRes();
         switch(fieldType) {
             case "int32":
-                res.v = Parser.parseInt(Arrays.copyOf(raw, 4));
+                res.v = ByteUtil.parseInt(Arrays.copyOf(raw, 4));
                 res.shift = 4;
                 break;
             case "int64":
-                res.v = Parser.parseLong(Arrays.copyOf(raw, 8));
+                res.v = ByteUtil.parseLong(Arrays.copyOf(raw, 8));
                 res.shift = 8;
                 break;
             case "string":
-                ParseStringRes r = Parser.parseString(raw);
+                ParseStringRes r = ByteUtil.parseString(raw);
                 res.v = r.str;
                 res.shift = r.next;
                 break;
@@ -228,41 +228,45 @@ public class Field {
         return str;
     }
 
+    public Range calExp(SingleExpression exp) throws Exception {
+        Object v = string2Value(exp.value);
+        long uid = value2Uid(v);
+        Range range = null;
+        CompareOperator op = exp.op;
+        switch(op) {
+            case LT:
+                range = new Range(Long.MIN_VALUE, uid > Long.MIN_VALUE ? uid - 1 : Long.MIN_VALUE);
+                break;
+            case LE:
+                range = new Range(Long.MIN_VALUE, uid);
+                break;
+            case EQ:
+                range = new Range(uid, uid);
+                break;
+            case GT:
+                range = new Range((uid == Long.MAX_VALUE) ? Long.MAX_VALUE : uid + 1, Long.MAX_VALUE);
+                break;
+            case GE:
+                range = new Range(uid, Long.MAX_VALUE);
+                break;
+            case NE:
+                range = new Range(Long.MIN_VALUE, Long.MAX_VALUE);
+                break;
+            default:
+                throw Error.InvalidLogOpException;
+        }
+        return range;
+    }
+
     @Override
     public String toString() {
         return new StringBuilder("(")
-            .append(fieldName)
-            .append(", ")
-            .append(fieldType)
-            .append(index!=0?", Index":", NoIndex")
-            .append(unique?", Unique":", NonUnique")
-            .append(")")
-            .toString();
-    }
-
-    public FieldCalRes calExp(SingleExpression exp) throws Exception {
-        Object v = null;
-        FieldCalRes res = new FieldCalRes();
-        switch(exp.compareOp) {
-            case "<":
-                res.left = 0;
-                v = string2Value(exp.value);
-                res.right = value2Uid(v);
-                if(res.right > 0) {
-                    res.right --;
-                }
-                break;
-            case "=":
-                v = string2Value(exp.value);
-                res.left = value2Uid(v);
-                res.right = res.left;
-                break;
-            case ">":
-                res.right = Long.MAX_VALUE;
-                v = string2Value(exp.value);
-                res.left = value2Uid(v) + 1;
-                break;
-        }
-        return res;
+                .append(fieldName)
+                .append(", ")
+                .append(fieldType)
+                .append(index!=0?", Index":", NoIndex")
+                .append(unique?", Unique":", NonUnique")
+                .append(")")
+                .toString();
     }
 }

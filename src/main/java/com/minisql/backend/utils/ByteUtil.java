@@ -5,7 +5,9 @@ import java.util.Arrays;
 
 import com.google.common.primitives.Bytes;
 
-public class Parser {
+public class ByteUtil {
+    private ByteUtil() {
+    }
 
     public static byte[] short2Byte(short value) {
         return ByteBuffer.allocate(Short.SIZE / Byte.SIZE).putShort(value).array();

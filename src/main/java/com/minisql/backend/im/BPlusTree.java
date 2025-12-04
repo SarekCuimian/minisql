@@ -13,7 +13,7 @@ import com.minisql.backend.im.Node.InsertAndSplitRes;
 import com.minisql.backend.im.Node.LeafSearchRangeRes;
 import com.minisql.backend.im.Node.SearchNextRes;
 import com.minisql.backend.txm.TransactionManagerImpl;
-import com.minisql.backend.utils.Parser;
+import com.minisql.backend.utils.ByteUtil;
 
 public class BPlusTree {
     DataManager dm;
@@ -24,7 +24,7 @@ public class BPlusTree {
     public static long create(DataManager dm) throws Exception {
         byte[] rawRoot = Node.newNilRootRaw();
         long rootUid = dm.insert(TransactionManagerImpl.SUPER_XID, rawRoot);
-        return dm.insert(TransactionManagerImpl.SUPER_XID, Parser.long2Byte(rootUid));
+        return dm.insert(TransactionManagerImpl.SUPER_XID, ByteUtil.long2Byte(rootUid));
     }
 
     public static BPlusTree load(long bootUid, DataManager dm) throws Exception {
@@ -42,7 +42,7 @@ public class BPlusTree {
         bootLock.lock();
         try {
             SubArray sa = bootDataItem.data();
-            return Parser.parseLong(Arrays.copyOfRange(sa.raw, sa.start, sa.start+8));
+            return ByteUtil.parseLong(Arrays.copyOfRange(sa.raw, sa.start, sa.start+8));
         } finally {
             bootLock.unlock();
         }
@@ -55,7 +55,7 @@ public class BPlusTree {
             long newRootUid = dm.insert(TransactionManagerImpl.SUPER_XID, rootRaw);
             bootDataItem.before();
             SubArray diRaw = bootDataItem.data();
-            System.arraycopy(Parser.long2Byte(newRootUid), 0, diRaw.raw, diRaw.start, 8);
+            System.arraycopy(ByteUtil.long2Byte(newRootUid), 0, diRaw.raw, diRaw.start, 8);
             bootDataItem.after(TransactionManagerImpl.SUPER_XID);
         } finally {
             bootLock.unlock();

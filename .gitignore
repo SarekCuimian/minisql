@@ -16,5 +16,7 @@ buildNumber.properties
 .idea/
 
 /backend.log
+/backend.pid
 /.java-version
 .m2/
+/data

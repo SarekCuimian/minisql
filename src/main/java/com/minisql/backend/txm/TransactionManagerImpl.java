@@ -8,7 +8,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import com.minisql.backend.utils.Panic;
-import com.minisql.backend.utils.Parser;
+import com.minisql.backend.utils.ByteUtil;
 import com.minisql.common.Error;
 
 public class TransactionManagerImpl implements TransactionManager {
@@ -62,7 +62,7 @@ public class TransactionManagerImpl implements TransactionManager {
         } catch (IOException e) {
             Panic.panic(e);
         }
-        this.xidCounter = Parser.parseLong(buf.array());
+        this.xidCounter = ByteUtil.parseLong(buf.array());
         long end = getXidPosition(this.xidCounter + 1);
         if(end != fileLen) {
             Panic.panic(Error.BadXIDFileException);
@@ -96,7 +96,7 @@ public class TransactionManagerImpl implements TransactionManager {
     // 将XID加一，并更新XID Header
     private void incrXIDCounter() {
         xidCounter ++;
-        ByteBuffer buf = ByteBuffer.wrap(Parser.long2Byte(xidCounter));
+        ByteBuffer buf = ByteBuffer.wrap(ByteUtil.long2Byte(xidCounter));
         try {
             fc.position(0);
             fc.write(buf);

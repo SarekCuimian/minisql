@@ -1,12 +1,11 @@
 package com.minisql.backend.server;
 
+import java.util.List;
+
 import com.minisql.backend.dbm.DatabaseContext;
 import com.minisql.backend.dbm.DatabaseManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.nio.charset.StandardCharsets;
-import java.util.List;
 
 import com.minisql.backend.parser.Parser;
 import com.minisql.backend.parser.statement.Abort;
@@ -24,10 +23,10 @@ import com.minisql.backend.parser.statement.Show;
 import com.minisql.backend.parser.statement.Update;
 import com.minisql.backend.parser.statement.Use;
 import com.minisql.backend.tbm.BeginRes;
-import com.minisql.backend.tbm.SelectStats;
 import com.minisql.backend.tbm.TableManager;
-import com.minisql.backend.utils.format.ExecResult;
-import com.minisql.backend.utils.format.TextTableFormatter;
+import com.minisql.common.ExecResult;
+import com.minisql.common.OpResult;
+import com.minisql.common.ResultSet;
 import com.minisql.common.Error;
 
 /**
@@ -102,7 +101,7 @@ public class Executor {
             long start = System.nanoTime();
             BeginRes r = tbm.begin((Begin) stat);
             xid = r.xid;
-            return finalizeResult(stat, r.result, start);
+            return ExecResult.from(r.result, resultType(stat), System.nanoTime() - start);
 
         // COMMIT
         } else if(Commit.class.isInstance(stat)) {
@@ -111,9 +110,9 @@ public class Executor {
                 throw Error.NoTransactionException;
             }
             long start = System.nanoTime();
-            byte[] res = tbm.commit(xid);
+            OpResult res = tbm.commit(xid);
             xid = 0;
-            return finalizeResult(stat, res, start);
+            return ExecResult.from(res, resultType(stat), System.nanoTime() - start);
 
         // ROLLBACK
         } else if(Abort.class.isInstance(stat)) {
@@ -122,9 +121,9 @@ public class Executor {
                 throw Error.NoTransactionException;
             }
             long start = System.nanoTime();
-            byte[] res = tbm.abort(xid);
+            OpResult res = tbm.abort(xid);
             xid = 0;
-            return finalizeResult(stat, res, start);
+            return ExecResult.from(res, resultType(stat), System.nanoTime() - start);
 
         // 非事务控制语句 → 进入 executeSQL
         } else {
@@ -142,8 +141,8 @@ public class Executor {
         // SHOW DATABASES 不依赖具体 DB，单独处理
         if(stat instanceof Show && ((Show) stat).target == Show.Target.DATABASES) {
             long start = System.nanoTime();
-            byte[] payload = formatDatabases();
-            return finalizeResult(stat, payload, start);
+            OpResult payload = showDatabases();
+            return ExecResult.from(payload, resultType(stat), System.nanoTime() - start);
         }
 
         TableManager tbm = tableManager();
@@ -159,7 +158,7 @@ public class Executor {
 
         long start = System.nanoTime();
         try {
-            byte[] res = null;
+            OpResult res = null;
             if(Show.class.isInstance(stat)) {
                 res = tbm.show(xid, (Show)stat);
             } else if(Describe.class.isInstance(stat)) {
@@ -175,7 +174,7 @@ public class Executor {
             } else if(Update.class.isInstance(stat)) {
                 res = tbm.update(xid, (Update)stat);
             }
-            return finalizeResult(stat, res, start);
+            return ExecResult.from(res, resultType(stat), System.nanoTime() - start);
 
         } catch(Exception e1) {
             e = e1;
@@ -198,29 +197,7 @@ public class Executor {
             }
         }
     }
-
-    /**
-     * 格式化 SQL 执行结果，根据是否为查询语句输出 rows 或 affected rows。
-     *
-     * @param stat SQL 语句类型对象
-     * @param payload 执行结果数据
-     * @param startTime 执行开始时间（纳秒）
-     * @return 格式化的结果文本字节数组
-     */
-    private ExecResult finalizeResult(Object stat, byte[] payload, long startTime) {
-        if(payload == null) {
-            payload = new byte[0];
-        }
-        if(isQueryStatement(stat)) {
-            long elapsed = System.nanoTime() - startTime;
-            int resultRows = SelectStats.getAndResetRowCount();
-            return ExecResult.resultSet(payload, elapsed, resultRows);
-        }
-        long elapsed = System.nanoTime() - startTime;
-        int affectedRows = estimateAffectedRows(stat, payload);
-        return ExecResult.okPacket(payload, elapsed, affectedRows);
-    }
-
+    
     /** 判断语句是否属于查询类（SELECT/SHOW/DESCRIBE） */
     private boolean isQueryStatement(Object stat) {
         return Select.class.isInstance(stat) ||
@@ -228,49 +205,8 @@ public class Executor {
                 Describe.class.isInstance(stat);
     }
 
-    /**
-     * 推算受影响的行数，用于 Insert/Update/Delete 的结果格式化。
-     *
-     * @param stat SQL 语句对象
-     * @param payload 执行结果数据
-     * @return 受影响行数
-     */
-    private int estimateAffectedRows(Object stat, byte[] payload) {
-        if(Insert.class.isInstance(stat)) {
-            return 1;
-        } else if(Update.class.isInstance(stat)) {
-            return parseCount(payload, "update");
-        } else if(Delete.class.isInstance(stat)) {
-            return parseCount(payload, "delete");
-        } else if(Create.class.isInstance(stat)) {
-            return 0;
-        } else if(CreateDatabase.class.isInstance(stat) || DropDatabase.class.isInstance(stat)) {
-            return 0;
-        } else if(Use.class.isInstance(stat)) {
-            return 0;
-        } else if(Begin.class.isInstance(stat) || Commit.class.isInstance(stat) || Abort.class.isInstance(stat)) {
-            return 0;
-        }
-        return -1;
-    }
-
-    /**
-     * 从返回字符串中解析 update/delete 计数。
-     */
-    private int parseCount(byte[] payload, String prefix) {
-        String str = new String(payload, StandardCharsets.UTF_8).trim();
-        if(!str.startsWith(prefix)) {
-            return -1;
-        }
-        String[] parts = str.split("\\s+");
-        if(parts.length < 2) {
-            return -1;
-        }
-        try {
-            return Integer.parseInt(parts[1]);
-        } catch (NumberFormatException e) {
-            return -1;
-        }
+    private ExecResult.Type resultType(Object stat) {
+        return isQueryStatement(stat) ? ExecResult.Type.RESULT : ExecResult.Type.OK;
     }
 
     private ExecResult handleUse(Use use) throws Exception {
@@ -279,15 +215,15 @@ public class Executor {
         databaseManager.release(dbContext);
         dbContext = newCtx;
         long start = System.nanoTime();
-        byte[] payload = ("Database changed to " + use.databaseName).getBytes(StandardCharsets.UTF_8);
-        return finalizeResult(use, payload, start);
+        OpResult payload = OpResult.message("Database changed to " + use.databaseName, 0);
+        return ExecResult.from(payload, resultType(use), System.nanoTime() - start);
     }
 
     private ExecResult handleCreateDatabase(CreateDatabase createDatabase) throws Exception {
         long start = System.nanoTime();
         databaseManager.create(createDatabase.databaseName);
-        byte[] payload = ("create database " + createDatabase.databaseName).getBytes(StandardCharsets.UTF_8);
-        return finalizeResult(createDatabase, payload, start);
+        OpResult payload = OpResult.message("create database " + createDatabase.databaseName, 0);
+        return ExecResult.from(payload, resultType(createDatabase), System.nanoTime() - start);
     }
 
     private ExecResult handleDropDatabase(DropDatabase dropDatabase) throws Exception {
@@ -298,8 +234,8 @@ public class Executor {
         }
         long start = System.nanoTime();
         databaseManager.drop(dropDatabase.databaseName);
-        byte[] payload = ("drop database " + dropDatabase.databaseName).getBytes(StandardCharsets.UTF_8);
-        return finalizeResult(dropDatabase, payload, start);
+        OpResult payload = OpResult.message("drop database " + dropDatabase.databaseName, 0);
+        return ExecResult.from(payload, resultType(dropDatabase), System.nanoTime() - start);
     }
 
     private TableManager tableManager() throws Exception {
@@ -315,10 +251,16 @@ public class Executor {
         }
     }
 
-    private byte[] formatDatabases() {
+    /*
+    * 获取数据库列表
+     */
+    private OpResult showDatabases() {
         List<String> dbs = databaseManager.show();
-        SelectStats.setRowCount(dbs.size());
-        return TextTableFormatter.formatSingleColumn("Database", dbs).getBytes(StandardCharsets.UTF_8);
+        List<List<String>> rows = new java.util.ArrayList<>();
+        for (String db : dbs) {
+            rows.add(List.of(db));
+        }
+        return OpResult.resultSet(new ResultSet(List.of("Database"), rows));
     }
 
     private void trySelectDefaultDatabase() {

@@ -3,7 +3,7 @@ package com.minisql.backend.dm.page;
 import java.util.Arrays;
 
 import com.minisql.backend.dm.page.cache.PageCache;
-import com.minisql.backend.utils.Parser;
+import com.minisql.backend.utils.ByteUtil;
 
 /**
  * PageX管理普通页
@@ -44,7 +44,7 @@ public class PageX {
      * @param ofData 期望的空闲空间起始偏移（通常 ≥ {@link #OF_DATA}）
      */
     private static void setFSO(byte[] raw, short ofData) {
-        System.arraycopy(Parser.short2Byte(ofData), 0, raw, OF_FREE, OF_DATA);
+        System.arraycopy(ByteUtil.short2Byte(ofData), 0, raw, OF_FREE, OF_DATA);
     }
 
     /**
@@ -64,7 +64,7 @@ public class PageX {
      * @return FSO 偏移值
      */
     private static short getFSO(byte[] raw) {
-        return Parser.parseShort(Arrays.copyOfRange(raw, 0, 2));
+        return ByteUtil.parseShort(Arrays.copyOfRange(raw, 0, 2));
     }
 
     /**

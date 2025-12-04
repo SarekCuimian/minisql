@@ -44,3 +44,14 @@ mvn exec:java -Dexec.mainClass="com.minisql.client.Launcher"
 一个执行示例：
 
 ![](https://s3.bmp.ovh/imgs/2021/11/2749906870276904.png)
+
+测试SQL
+```sql
+create database db1;
+create table user id int32, age int32 (index id);
+insert into user values 1 10;
+select * from user;
+
+
+drop database db1
+```

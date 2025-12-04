@@ -8,6 +8,6 @@ public enum IsolationLevel {
     REPEATABLE_READ;
 
     public static IsolationLevel defaultLevel() {
-        return REPEATABLE_READ;
+        return READ_COMMITTED;
     }
 }

@@ -1,4 +1,4 @@
-package com.minisql.api.dto;
+package com.minisql.api.entity.response;
 
 public class SessionCreateResponse {
 

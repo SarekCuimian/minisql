@@ -10,9 +10,9 @@ import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
-import com.minisql.backend.utils.format.ConsoleResultFormatter;
-import com.minisql.backend.utils.format.ExecResult;
-import com.minisql.backend.utils.format.ResultFormatter;
+import com.minisql.common.ConsoleResultFormatter;
+import com.minisql.common.ExecResult;
+import com.minisql.common.ResultFormatter;
 
 public class Shell {
     private static final String ANSI_RESET = "\u001B[0m";
@@ -31,6 +31,8 @@ public class Shell {
                     .terminal(terminal)
                     .appName("MiniSQL")
                     .history(new DefaultHistory())
+                    // 不忽略以空格开头的命令，保证历史可用
+                    .option(LineReader.Option.HISTORY_IGNORE_SPACE, false)
                     .build();
             while (true) {
                 String statStr;

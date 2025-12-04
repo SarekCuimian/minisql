@@ -4,13 +4,14 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import com.minisql.backend.dbm.DatabaseManager;
-import com.minisql.backend.utils.format.ExecResult;
-import com.minisql.backend.utils.format.ExecResultCodec;
+import com.minisql.common.ExecResult;
+import com.minisql.common.ExecResultCodec;
 import com.minisql.transport.Encoder;
 import com.minisql.transport.Package;
 import com.minisql.transport.Packager;
@@ -19,6 +20,9 @@ import com.minisql.transport.Transporter;
 public class Server {
     private int port;
     private final DatabaseManager databaseManager;
+    private final AtomicBoolean running = new AtomicBoolean(false);
+    private ServerSocket serverSocket;
+    private ThreadPoolExecutor tpe;
 
     public Server(int port, DatabaseManager databaseManager) {
         this.port = port;
@@ -26,9 +30,11 @@ public class Server {
     }
 
     public void start() {
-        ServerSocket ss = null;
+        if (!running.compareAndSet(false, true)) {
+            return;
+        }
         try {
-            ss = new ServerSocket(port);
+            serverSocket = new ServerSocket(port);
         } catch (IOException e) {
             e.printStackTrace();
             return;
@@ -36,7 +42,7 @@ public class Server {
         System.out.println("Server listen to port: " + port);
 
         // 线程池
-        ThreadPoolExecutor tpe = new ThreadPoolExecutor(
+        tpe = new ThreadPoolExecutor(
             10, 
             20, 
             1L, 
@@ -46,18 +52,39 @@ public class Server {
         );
         
         try {
-            while(true) {
-                Socket socket = ss.accept();
+            while(running.get()) {
+                Socket socket = serverSocket.accept();
                 Runnable handleSocket = new HandleSocket(socket, databaseManager);
                 tpe.execute(handleSocket);
             }
         } catch(IOException e) {
             e.printStackTrace();
         } finally {
-            try {
-                ss.close();
-            } catch (IOException ignored) {}
+            stop();
         }
+    }
+
+    public void stop() {
+        if(!running.compareAndSet(true, false)) {
+            return;
+        }
+        try {
+            if(serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+            }
+        } catch (IOException ignored) {}
+        if(tpe != null) {
+            tpe.shutdown();
+            try {
+                if(!tpe.awaitTermination(5, TimeUnit.SECONDS)) {
+                    tpe.shutdownNow();
+                }
+            } catch (InterruptedException ie) {
+                tpe.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
+        databaseManager.shutdown();
     }
 }
 

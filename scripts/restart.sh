@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DB_PATH="${1:-/tmp/minisql}"
-PORT="${2:-9999}"
-LOG_FILE="backend.log"
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+
+DB_PATH="${1:-${MINISQL_DATA_DIR:-$ROOT_DIR/data}}"
+PORT="${2:-9999}"
+LOG_FILE="backend.log"
 
 SERVER_PID=""
 cleanup() {
@@ -25,9 +25,9 @@ ensure_database() {
         return
     fi
 
-    local default_db_dir="${DB_PATH}/database"
-    if [[ ! -d "${default_db_dir}" ]]; then
-        echo "[INFO] Default database missing under ${DB_PATH}, creating..."
+    # 如果目录存在但没有任何 .xid（没有数据库），则创建默认库
+    if ! find "${DB_PATH}" -maxdepth 1 -name "*.xid" -print -quit >/dev/null; then
+        echo "[INFO] No databases found under ${DB_PATH}, creating default..."
         mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" \
             -Dexec.args="-create ${DB_PATH}"
     fi
@@ -44,18 +44,31 @@ wait_for_server() {
     exit 1
 }
 
+echo "[INFO] Stopping any existing backend..."
+if [[ -f "backend.pid" ]]; then
+    TARGET_PID=$(cat backend.pid)
+    if ps -p "${TARGET_PID}" >/dev/null 2>&1; then
+        kill -TERM "${TARGET_PID}" >/dev/null 2>&1 || true
+        for _ in {1..10}; do
+            if ! ps -p "${TARGET_PID}" >/dev/null 2>&1; then
+                break
+            fi
+            sleep 0.5
+        done
+    fi
+    rm -f backend.pid
+fi
+
 echo "[INFO] Cleaning and compiling sources..."
 mvn clean compile
 
 ensure_database
 
-echo "[INFO] Stopping any existing backend..."
-pkill -f "com.minisql.backend.Launcher" >/dev/null 2>&1 || true
-
 echo "[INFO] Starting backend on ${DB_PATH} (log: ${LOG_FILE})..."
 mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" \
     -Dexec.args="-open ${DB_PATH}" >"${LOG_FILE}" 2>&1 &
 SERVER_PID=$!
+echo "${SERVER_PID}" > backend.pid
 
 wait_for_server
 echo "[INFO] Backend is ready on port ${PORT}"

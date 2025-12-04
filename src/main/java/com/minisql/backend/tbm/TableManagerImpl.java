@@ -16,8 +16,9 @@ import com.minisql.backend.parser.statement.Insert;
 import com.minisql.backend.parser.statement.Select;
 import com.minisql.backend.parser.statement.Show;
 import com.minisql.backend.parser.statement.Update;
-import com.minisql.backend.utils.Parser;
-import com.minisql.backend.utils.format.TextTableFormatter;
+import com.minisql.backend.utils.ByteUtil;
+import com.minisql.common.OpResult;
+import com.minisql.common.ResultSet;
 import com.minisql.backend.vm.IsolationLevel;
 import com.minisql.backend.vm.VersionManager;
 import com.minisql.common.Error;
@@ -56,7 +57,7 @@ public class TableManagerImpl implements TableManager {
      */
     private long firstTableUid() {
         byte[] raw = booter.load();
-        return Parser.parseLong(raw);
+        return ByteUtil.parseLong(raw);
     }
 
     /**
@@ -64,7 +65,7 @@ public class TableManagerImpl implements TableManager {
      * @param uid
      */
     private void updateFirstTableUid(long uid) {
-        byte[] raw = Parser.long2Byte(uid);
+        byte[] raw = ByteUtil.long2Byte(uid);
         booter.update(raw);
     }
 
@@ -73,28 +74,26 @@ public class TableManagerImpl implements TableManager {
         BeginRes res = new BeginRes();
         IsolationLevel level = begin.isolationLevel == null ? IsolationLevel.READ_COMMITTED : begin.isolationLevel;
         res.xid = vm.begin(level);
-        res.result = "begin".getBytes();
+        res.result = OpResult.message("begin", 0);
         return res;
     }
     @Override
-    public byte[] commit(long xid) throws Exception {
+    public OpResult commit(long xid) throws Exception {
         vm.commit(xid);
-        return "commit".getBytes();
+        return OpResult.message("commit", 0);
     }
     @Override
-    public byte[] abort(long xid) {
+    public OpResult abort(long xid) {
         vm.abort(xid);
-        return "abort".getBytes();
+        return OpResult.message("abort", 0);
     }
     @Override
-    public byte[] show(long xid, Show show) {
-        if(show == null || show.target == Show.Target.TABLES) {
-            return showTables(xid);
-        }
-        return showDatabases();
+    public OpResult show(long xid, Show show) {
+        // SHOW DATABASES 在 Executor 里直接处理，这里统一返回当前库的表列表
+        return showTables(xid);
     }
     @Override
-    public byte[] describe(long xid, Describe describe) throws Exception {
+    public OpResult describe(long xid, Describe describe) throws Exception {
         Table table;
         lock.lock();
         try {
@@ -134,11 +133,10 @@ public class TableManagerImpl implements TableManager {
             row.add("");
             rows.add(row);
         }
-        SelectStats.setRowCount(rows.size());
-        return TextTableFormatter.format(headers, rows).getBytes();
+        return OpResult.resultSet(new ResultSet(headers, rows));
     }
     @Override
-    public byte[] create(long xid, Create create) throws Exception {
+    public OpResult create(long xid, Create create) throws Exception {
         lock.lock();
         try {
             if(tableCache.containsKey(create.tableName)) {
@@ -151,13 +149,13 @@ public class TableManagerImpl implements TableManager {
                 xidTableCache.put(xid, new ArrayList<>());
             }
             xidTableCache.get(xid).add(table);
-            return ("create " + create.tableName).getBytes();
+            return OpResult.message("create " + create.tableName, 0);
         } finally {
             lock.unlock();
         }
     }
     @Override
-    public byte[] insert(long xid, Insert insert) throws Exception {
+    public OpResult insert(long xid, Insert insert) throws Exception {
         lock.lock();
         Table table = tableCache.get(insert.tableName);
         lock.unlock();
@@ -165,7 +163,7 @@ public class TableManagerImpl implements TableManager {
             throw Error.TableNotFoundException;
         }
         table.insert(xid, insert);
-        return "insert".getBytes();
+        return OpResult.message("insert", 1);
     }
 
     /**
@@ -173,7 +171,7 @@ public class TableManagerImpl implements TableManager {
      * @param xid
      * @return
      */
-    private byte[] showTables(long xid) {
+    private OpResult showTables(long xid) {
         lock.lock();
         List<String> names = new ArrayList<>();
         try {
@@ -189,33 +187,27 @@ public class TableManagerImpl implements TableManager {
         } finally {
             lock.unlock();
         }
-        SelectStats.setRowCount(names.size());
         String header = "Tables_in_" + currentDatabaseName();
-        return TextTableFormatter.formatSingleColumn(header, names).getBytes();
+        List<List<String>> rows = new ArrayList<>();
+        for (String name : names) {
+            rows.add(List.of(name));
+        }
+        return OpResult.resultSet(new ResultSet(List.of(header), rows));
     }
 
-    /**
-     * 显示所有数据库
-     * @return
-     */
-    private byte[] showDatabases() {
-        List<String> databases = new ArrayList<>();
-        databases.add(currentDatabaseName());
-        SelectStats.setRowCount(databases.size());
-        return TextTableFormatter.formatSingleColumn("Database", databases).getBytes();
-    }
     @Override
-    public byte[] read(long xid, Select read) throws Exception {
+    public OpResult read(long xid, Select read) throws Exception {
         lock.lock();
         Table table = tableCache.get(read.tableName);
         lock.unlock();
         if(table == null) {
             throw Error.TableNotFoundException;
         }
-        return table.read(xid, read).getBytes();
+        ResultSet data = table.read(xid, read);
+        return OpResult.resultSet(data);
     }
     @Override
-    public byte[] update(long xid, Update update) throws Exception {
+    public OpResult update(long xid, Update update) throws Exception {
         lock.lock();
         Table table = tableCache.get(update.tableName);
         lock.unlock();
@@ -223,10 +215,10 @@ public class TableManagerImpl implements TableManager {
             throw Error.TableNotFoundException;
         }
         int count = table.update(xid, update);
-        return ("update " + count).getBytes();
+        return OpResult.message("update", count);
     }
     @Override
-    public byte[] delete(long xid, Delete delete) throws Exception {
+    public OpResult delete(long xid, Delete delete) throws Exception {
         lock.lock();
         Table table = tableCache.get(delete.tableName);
         lock.unlock();
@@ -234,7 +226,7 @@ public class TableManagerImpl implements TableManager {
             throw Error.TableNotFoundException;
         }
         int count = table.delete(xid, delete);
-        return ("delete " + count).getBytes();
+        return OpResult.message("delete", count);
     }
 
     private String currentDatabaseName() {

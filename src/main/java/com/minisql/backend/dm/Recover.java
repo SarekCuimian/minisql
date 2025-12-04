@@ -17,7 +17,7 @@ import com.minisql.backend.dm.page.PageX;
 import com.minisql.backend.dm.page.cache.PageCache;
 import com.minisql.backend.txm.TransactionManager;
 import com.minisql.backend.utils.Panic;
-import com.minisql.backend.utils.Parser;
+import com.minisql.backend.utils.ByteUtil;
 
 public class Recover {
 
@@ -152,8 +152,8 @@ public class Recover {
 
     public static byte[] updateLog(long xid, DataItem dataItem) {
         byte[] logType = {LOG_TYPE_UPDATE};
-        byte[] xidRaw = Parser.long2Byte(xid);
-        byte[] uidRaw = Parser.long2Byte(dataItem.getUid());
+        byte[] xidRaw = ByteUtil.long2Byte(xid);
+        byte[] uidRaw = ByteUtil.long2Byte(dataItem.getUid());
         byte[] oldRaw = dataItem.getOldRaw();
         SubArray raw = dataItem.getRaw();
         byte[] newRaw = Arrays.copyOfRange(raw.raw, raw.start, raw.end);
@@ -162,8 +162,8 @@ public class Recover {
 
     private static UpdateLogInfo parseUpdateLog(byte[] log) {
         UpdateLogInfo li = new UpdateLogInfo();
-        li.xid = Parser.parseLong(Arrays.copyOfRange(log, OF_XID, OF_UPDATE_UID));
-        long uid = Parser.parseLong(Arrays.copyOfRange(log, OF_UPDATE_UID, OF_UPDATE_RAW));
+        li.xid = ByteUtil.parseLong(Arrays.copyOfRange(log, OF_XID, OF_UPDATE_UID));
+        long uid = ByteUtil.parseLong(Arrays.copyOfRange(log, OF_UPDATE_UID, OF_UPDATE_RAW));
         li.offset = (short)(uid & ((1L << 16) - 1));
         uid >>>= 32;
         li.pgno = (int)(uid & ((1L << 32) - 1));
@@ -208,17 +208,17 @@ public class Recover {
 
     public static byte[] insertLog(long xid, Page pg, byte[] raw) {
         byte[] logTypeRaw = {LOG_TYPE_INSERT};
-        byte[] xidRaw = Parser.long2Byte(xid);
-        byte[] pgnoRaw = Parser.int2Byte(pg.getPageNumber());
-        byte[] offsetRaw = Parser.short2Byte(PageX.getFSO(pg));
+        byte[] xidRaw = ByteUtil.long2Byte(xid);
+        byte[] pgnoRaw = ByteUtil.int2Byte(pg.getPageNumber());
+        byte[] offsetRaw = ByteUtil.short2Byte(PageX.getFSO(pg));
         return Bytes.concat(logTypeRaw, xidRaw, pgnoRaw, offsetRaw, raw);
     }
 
     private static InsertLogInfo parseInsertLog(byte[] log) {
         InsertLogInfo li = new InsertLogInfo();
-        li.xid = Parser.parseLong(Arrays.copyOfRange(log, OF_XID, OF_INSERT_PGNO));
-        li.pgno = Parser.parseInt(Arrays.copyOfRange(log, OF_INSERT_PGNO, OF_INSERT_OFFSET));
-        li.offset = Parser.parseShort(Arrays.copyOfRange(log, OF_INSERT_OFFSET, OF_INSERT_RAW));
+        li.xid = ByteUtil.parseLong(Arrays.copyOfRange(log, OF_XID, OF_INSERT_PGNO));
+        li.pgno = ByteUtil.parseInt(Arrays.copyOfRange(log, OF_INSERT_PGNO, OF_INSERT_OFFSET));
+        li.offset = ByteUtil.parseShort(Arrays.copyOfRange(log, OF_INSERT_OFFSET, OF_INSERT_RAW));
         li.raw = Arrays.copyOfRange(log, OF_INSERT_RAW, log.length);
         return li;
     }

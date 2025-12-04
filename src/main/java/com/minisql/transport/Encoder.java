@@ -9,8 +9,8 @@ import com.minisql.common.Error;
 public class Encoder {
 
     public byte[] encode(Package pkg) {
-        if(pkg.getErr() != null) {
-            Exception err = pkg.getErr();
+        if(pkg.getExc() != null) {
+            Exception err = pkg.getExc();
             String msg = "Intern server error!";
             if(err.getMessage() != null) {
                 msg = err.getMessage();

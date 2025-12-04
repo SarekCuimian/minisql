@@ -8,7 +8,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 
 import com.minisql.backend.utils.Panic;
-import com.minisql.backend.utils.Parser;
+import com.minisql.backend.utils.ByteUtil;
 import com.minisql.common.Error;
 
 public interface Logger {
@@ -40,7 +40,7 @@ public interface Logger {
            Panic.panic(e);
         }
 
-        ByteBuffer buf = ByteBuffer.wrap(Parser.int2Byte(0));
+        ByteBuffer buf = ByteBuffer.wrap(ByteUtil.int2Byte(0));
         try {
             fc.position(0);
             fc.write(buf);

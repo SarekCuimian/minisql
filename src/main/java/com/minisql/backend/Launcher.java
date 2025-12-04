@@ -25,6 +25,7 @@ public class Launcher {
         options.addOption("open", true, "-open DBPath");
         options.addOption("create", true, "-create DBPath");
         options.addOption("mem", true, "-mem 64MB");
+        options.addOption("shutdown", true, "-shutdown DBPath");
         CommandLineParser parser = new DefaultParser(); 
         CommandLine cmd = parser.parse(options,args);
 
@@ -34,6 +35,10 @@ public class Launcher {
         }
         if(cmd.hasOption("create")) {
             createDB(cmd.getOptionValue("create"));
+            return;
+        }
+        if(cmd.hasOption("shutdown")) {
+            shutdownDB(cmd.getOptionValue("shutdown"));
             return;
         }
         System.out.println("Usage: launcher (open|create) DBPath");
@@ -48,7 +53,15 @@ public class Launcher {
     private static void openDB(String path, long mem) {
         DatabaseManager dbm = new DatabaseManager(path, mem);
         dbm.createDefault();
-        new Server(port, dbm).start();
+        Server server = new Server(port, dbm);
+        Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
+        server.start();
+    }
+
+    private static void shutdownDB(String path) {
+        DatabaseManager dbm = new DatabaseManager(path, DEFAULT_MEM);
+        dbm.shutdown();
+        System.out.println("Database resources under " + path + " have been closed.");
     }
 
     private static long parseMem(String memStr) {

@@ -1,6 +1,7 @@
 package com.minisql.backend.vm;
 
 import com.minisql.backend.txm.TransactionManager;
+import com.minisql.backend.txm.TransactionManagerImpl;
 
 public class Visibility {
     
@@ -14,6 +15,10 @@ public class Visibility {
     }
 
     public static boolean isVisible(TransactionManager txm, Transaction tx, Entry e) {
+        // 超级事务用于元信息加载，不受可见性规则约束
+        if(tx.xid == TransactionManagerImpl.SUPER_XID) {
+            return true;
+        }
         if(tx.level == IsolationLevel.READ_COMMITTED) {
             return readCommitted(txm, tx, e);
         } else {

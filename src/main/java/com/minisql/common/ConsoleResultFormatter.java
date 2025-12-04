@@ -1,6 +1,5 @@
-package com.minisql.backend.utils.format;
+package com.minisql.common;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 /**
@@ -18,19 +17,20 @@ public class ConsoleResultFormatter implements ResultFormatter {
 
     private byte[] formatResultSet(ExecResult result) {
         StringBuilder sb = new StringBuilder();
-        byte[] payload = result.getPayload();
-        if (payload.length > 0) {
-            sb.append(new String(payload, StandardCharsets.UTF_8)).append("\n");
+        ResultSet data = result.getResultSet();
+        if (data != null && !data.getHeaders().isEmpty()) {
+            sb.append(TextTableFormatter.format(data.getHeaders(), data.getRows())).append("\n");
         }
         int rows = Math.max(result.getResultRows(), 0);
         String summary = rows + (rows == 1 ? " row" : " rows") +
                 " in set (" + formatSeconds(result.getElapsedNanos()) + " sec)";
         sb.append(summary);
-        return sb.toString().getBytes(StandardCharsets.UTF_8);
+        return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private byte[] formatOK(ExecResult result) {
-        StringBuilder sb = new StringBuilder("Query OK");
+        String base = (result.getMessage() == null || result.getMessage().isEmpty()) ? "Query OK" : result.getMessage();
+        StringBuilder sb = new StringBuilder(base);
         int affectedRows = result.getAffectedRows();
         if (affectedRows >= 0) {
             sb.append(", ")
@@ -39,7 +39,7 @@ public class ConsoleResultFormatter implements ResultFormatter {
                     .append(" affected");
         }
         sb.append(" (").append(formatSeconds(result.getElapsedNanos())).append(" sec)");
-        return sb.toString().getBytes(StandardCharsets.UTF_8);
+        return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private String formatSeconds(long nanos) {

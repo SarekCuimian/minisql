@@ -15,7 +15,7 @@ import com.minisql.backend.parser.statement.Show;
 import com.minisql.backend.parser.statement.Update;
 import com.minisql.backend.vm.IsolationLevel;
 
-public class ParserTest {
+public class ByteUtilTest {
     @Test
     public void testCreate() throws Exception {
         String stat = "create table student id int32, name string, uid int64, (index name id uid)";

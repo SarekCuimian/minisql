@@ -2,18 +2,18 @@ package com.minisql.transport;
 
 public class Package {
     byte[] data;
-    Exception err;
+    Exception exc;
 
-    public Package(byte[] data, Exception err) {
+    public Package(byte[] data, Exception exc) {
         this.data = data;
-        this.err = err;
+        this.exc = exc;
     }
 
     public byte[] getData() {
         return data;
     }
 
-    public Exception getErr() {
-        return err;
+    public Exception getExc() {
+        return exc;
     }
 }

@@ -1,7 +1,7 @@
 package com.minisql.client;
 
-import com.minisql.backend.utils.format.ExecResult;
-import com.minisql.backend.utils.format.ExecResultCodec;
+import com.minisql.common.ExecResult;
+import com.minisql.common.ExecResultCodec;
 import com.minisql.transport.Package;
 import com.minisql.transport.Packager;
 
@@ -15,8 +15,8 @@ public class Client {
     public ExecResult execute(byte[] stat) throws Exception {
         Package pkg = new Package(stat, null);
         Package resPkg = rt.roundTrip(pkg);
-        if(resPkg.getErr() != null) {
-            throw resPkg.getErr();
+        if(resPkg.getExc() != null) {
+            throw resPkg.getExc();
         }
         return ExecResultCodec.decode(resPkg.getData());
     }
