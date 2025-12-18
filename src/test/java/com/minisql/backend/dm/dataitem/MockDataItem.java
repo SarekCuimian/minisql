@@ -38,7 +38,7 @@ public class MockDataItem implements DataItem {
     }
 
     @Override
-    public void unBefore() {
+    public void rollback() {
         System.arraycopy(oldData, 0, data.raw, data.start, oldData.length);
         wLock.unlock();
     }

@@ -8,27 +8,27 @@ import com.minisql.backend.dm.page.Page;
 import com.minisql.backend.dm.page.PageOne;
 import com.minisql.backend.dm.page.PageX;
 import com.minisql.backend.dm.page.cache.PageCache;
-import com.minisql.backend.dm.page.index.PageIndex;
-import com.minisql.backend.dm.page.index.PageInfo;
+import com.minisql.backend.dm.page.fsm.FreeSpaceMap;
+import com.minisql.backend.dm.page.fsm.FreeSpace;
 import com.minisql.backend.txm.TransactionManager;
 import com.minisql.backend.utils.Panic;
-import com.minisql.backend.utils.Types;
+import com.minisql.backend.utils.UidUtil;
 import com.minisql.common.Error;
 
 public class DataManagerImpl extends AbstractCache<DataItem> implements DataManager {
 
     TransactionManager txm;
-    PageCache pc;
+    PageCache pageCache;
     Logger logger;
-    PageIndex pIndex;
+    FreeSpaceMap fsm;
     Page pageOne;
 
-    public DataManagerImpl(PageCache pc, Logger logger, TransactionManager txm) {
+    public DataManagerImpl(PageCache pageCache, Logger logger, TransactionManager txm) {
         super(0);
-        this.pc = pc;
+        this.pageCache = pageCache;
         this.logger = logger;
         this.txm = txm;
-        this.pIndex = new PageIndex();
+        this.fsm = new FreeSpaceMap();
     }
 
     @Override
@@ -44,44 +44,44 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
     @Override
     public long insert(long xid, byte[] data) throws Exception {
         byte[] raw = DataItem.wrapDataItemRaw(data);
-        if(raw.length > PageX.MAX_FREE_SPACE) {
+        if(raw.length > PageX.MAX_FREE_SPACE_SIZE) {
             throw Error.DataTooLargeException;
         }
 
-        PageInfo pi = null;
+        FreeSpace freeSpace = null;
+        // 尝试从 FSM 中获取一个满足要求的空闲页空间
         for(int i = 0; i < 5; i ++) {
-            pi = pIndex.select(raw.length);
-            if (pi != null) {
+            freeSpace = fsm.poll(raw.length);
+            if (freeSpace != null) {
                 break;
             } else {
-                int newPgno = pc.newPage(PageX.initRaw());
-                pIndex.add(newPgno, PageX.MAX_FREE_SPACE);
+                int newPgno = pageCache.newPage(PageX.initRaw());
+                fsm.add(newPgno, PageX.MAX_FREE_SPACE_SIZE);
             }
         }
-        if(pi == null) {
+        if(freeSpace == null) {
             throw Error.DatabaseBusyException;
         }
 
         Page pg = null;
-        int freeSpace = 0;
+        int freeSpaceSize = 0;
         try {
-            pg = pc.getPage(pi.pgno);
+            pg = pageCache.getPage(freeSpace.pgno);
             // 把一次更新操作序列化成 WAL payload
             byte[] log = Recover.insertLog(xid, pg, raw);
             // 把 payload 包入 [Size][Checksum][Data] 并顺序写入 .log 文件
             logger.log(log);
 
             short offset = PageX.insert(pg, raw);
-
-            pg.release();
-            return Types.addressToUid(pi.pgno, offset);
+            return UidUtil.addressToUid(freeSpace.pgno, offset);
 
         } finally {
-            // 将取出的pg重新插入pIndex
+            // 将取出的pg重新插入FSM
             if(pg != null) {
-                pIndex.add(pi.pgno, PageX.getFreeSpace(pg));
+                fsm.add(freeSpace.pgno, PageX.getFreeSpaceSize(pg));
+                pg.release();
             } else {
-                pIndex.add(pi.pgno, freeSpace);
+                fsm.add(freeSpace.pgno, freeSpaceSize);
             }
         }
     }
@@ -90,10 +90,9 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
     public void close() {
         super.close();
         logger.close();
-
         PageOne.setVcClose(pageOne);
         pageOne.release();
-        pc.close();
+        pageCache.close();
     }
 
     // 为xid生成update日志
@@ -107,53 +106,63 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
     }
 
     @Override
-    protected DataItem getForCache(long uid) throws Exception {
+    protected DataItem loadCache(long uid) throws Exception {
         short offset = (short)(uid & ((1L << 16) - 1));
         uid >>>= 32;
         int pgno = (int)(uid & ((1L << 32) - 1));
-        Page pg = pc.getPage(pgno);
-        return DataItem.parseDataItem(pg, offset, this);
+        Page pg = pageCache.getPage(pgno);
+        try {
+            return DataItem.parseDataItem(pg, offset, this);
+        } catch (RuntimeException e) {
+            pg.release();
+            throw e;
+        }
     }
 
     @Override
-    protected void releaseForCache(DataItem di) {
+    protected void flushCache(DataItem di) {
         di.page().release();
     }
 
     // 在创建文件时初始化PageOne
     void initPageOne() {
-        int pgno = pc.newPage(PageOne.InitRaw());
+        int pgno = pageCache.newPage(PageOne.initRaw());
         assert pgno == 1;
         try {
-            pageOne = pc.getPage(pgno);
+            pageOne = pageCache.getPage(pgno);
         } catch (Exception e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
-        pc.flushPage(pageOne);
+        pageCache.persistPage(pageOne);
     }
 
     // 在打开已有文件时时读入PageOne，并验证正确性
-    boolean loadCheckPageOne() {
+    boolean checkPageOne() {
         try {
-            pageOne = pc.getPage(1);
+            pageOne = pageCache.getPage(1);
         } catch (Exception e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         return PageOne.checkVc(pageOne);
     }
 
-    // 初始化pageIndex
-    void fillPageIndex() {
-        int pageNumber = pc.getPageNumber();
-        for(int i = 2; i <= pageNumber; i ++) {
+    /**
+     * 初始化 FreeSpaceMap
+     */
+    void initFreeSpaceMap() {
+        int pageCount = pageCache.getPageCount();
+        for(int i = 2; i <= pageCount; i ++) {
             Page pg = null;
             try {
-                pg = pc.getPage(i);
+                pg = pageCache.getPage(i);
+                fsm.add(pg.getPageNumber(), PageX.getFreeSpaceSize(pg));
             } catch (Exception e) {
-                Panic.panic(e);
+                Panic.of(e);
+            } finally {
+                if(pg != null) {
+                    pg.release();
+                }
             }
-            pIndex.add(pg.getPageNumber(), PageX.getFreeSpace(pg));
-            pg.release();
         }
     }
     

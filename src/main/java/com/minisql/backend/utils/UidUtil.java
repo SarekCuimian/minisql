@@ -1,6 +1,6 @@
 package com.minisql.backend.utils;
 
-public class Types {
+public class UidUtil {
     /**
      * 将页号和偏移量组合成 UID [pgno(高32)][offset(低16)]
      *

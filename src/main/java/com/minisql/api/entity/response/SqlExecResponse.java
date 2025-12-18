@@ -1,7 +1,7 @@
 package com.minisql.api.entity.response;
 
 /**
- * 通用 SQL 执行响应，data 可为文本或结构化结果。
+ * 通用 SQL 执行响应，getData 可为文本或结构化结果。
  */
 public class SqlExecResponse<T> {
 

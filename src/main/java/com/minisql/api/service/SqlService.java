@@ -7,6 +7,7 @@ import com.minisql.common.ConsoleResultFormatter;
 import com.minisql.common.ExecResult;
 import com.minisql.common.ResultFormatter;
 import com.minisql.api.entity.enums.ResponseFormat;
+import com.minisql.api.entity.SqlExecResult;
 import com.minisql.api.entity.response.SqlExecResponse;
 import com.minisql.api.session.MiniSqlSession;
 import com.minisql.api.session.SessionManager;
@@ -38,8 +39,8 @@ public class SqlService {
                 String text = new String(formatter.format(result), StandardCharsets.UTF_8);
                 return SqlExecResponse.success(text);
             }
-            // 返回结构化结果，前端可自行渲染 headers/rows/message 等字段
-            return SqlExecResponse.success(result);
+            // 返回扁平化的结构化结果，避免重复字段
+            return SqlExecResponse.success(SqlExecResult.from(result));
         } catch (Exception ex) {
             // 捕获所有异常，返回错误信息
             LOGGER.error("执行 SQL 失败: {}", sql, ex);
