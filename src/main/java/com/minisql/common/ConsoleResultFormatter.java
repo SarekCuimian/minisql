@@ -29,7 +29,9 @@ public class ConsoleResultFormatter implements ResultFormatter {
     }
 
     private byte[] formatOK(ExecResult result) {
-        String base = (result.getMessage() == null || result.getMessage().isEmpty()) ? "Query OK" : result.getMessage();
+        String base = (result.getMessage() == null || result.getMessage().isEmpty()) 
+                    ? "Query OK" : result.getMessage();
+
         StringBuilder sb = new StringBuilder(base);
         int affectedRows = result.getAffectedRows();
         if (affectedRows >= 0) {

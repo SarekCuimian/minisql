@@ -7,6 +7,8 @@ import com.minisql.backend.parser.statement.Abort;
 import com.minisql.backend.parser.statement.Begin;
 import com.minisql.backend.parser.statement.Commit;
 import com.minisql.backend.parser.statement.Create;
+import com.minisql.backend.parser.statement.Aggregate;
+import com.minisql.backend.aggregator.AggregateFunc;
 import com.minisql.backend.parser.statement.Delete;
 import com.minisql.backend.parser.statement.Describe;
 import com.minisql.backend.parser.statement.Drop;
@@ -19,8 +21,10 @@ import com.minisql.backend.parser.statement.Update;
 import com.minisql.backend.parser.statement.CreateDatabase;
 import com.minisql.backend.parser.statement.Use;
 import com.minisql.backend.parser.statement.Where;
-import com.minisql.backend.tbm.CompareOperator;
-import com.minisql.backend.tbm.LogicOperator;
+import com.minisql.backend.parser.statement.condition.Condition;
+import com.minisql.backend.parser.statement.condition.Operand;
+import com.minisql.backend.parser.statement.operator.CompareOperator;
+import com.minisql.backend.parser.statement.operator.LogicOperator;
 import com.minisql.backend.vm.IsolationLevel;
 import com.minisql.common.Error;
 
@@ -41,8 +45,6 @@ public class Parser {
                     stat = parseCommit(tokenizer);
                     break;
                 case "abort":
-                    stat = parseAbort(tokenizer);
-                    break;
                 case "rollback":
                     stat = parseAbort(tokenizer);
                     break;
@@ -68,8 +70,6 @@ public class Parser {
                     stat = parseShow(tokenizer);
                     break;
                 case "describe":
-                    stat = parseDescribe(tokenizer);
-                    break;
                 case "desc":
                     stat = parseDescribe(tokenizer);
                     break;
@@ -178,6 +178,9 @@ public class Parser {
         }
 
         update.where = parseWhere(tokenizer);
+        if(!reachStatementEnd(tokenizer)) {
+            throw Error.InvalidCommandException;
+        }
         return update;
     }
 
@@ -197,6 +200,9 @@ public class Parser {
         tokenizer.pop();
 
         delete.where = parseWhere(tokenizer);
+        if(!reachStatementEnd(tokenizer)) {
+            throw Error.InvalidCommandException;
+        }
         return delete;
     }
 
@@ -214,6 +220,34 @@ public class Parser {
         }
         insert.tableName = tableName;
         tokenizer.pop();
+
+        // 可选列名列表
+        List<String> columns = null;
+        if("(".equals(tokenizer.peek())) {
+            tokenizer.pop(); // consume '('
+            columns = new ArrayList<>();
+            boolean hasColumn = false;
+            while(true) {
+                String token = tokenizer.peek();
+                if(")".equals(token)) {
+                    tokenizer.pop();
+                    break;
+                }
+                if(",".equals(token)) {
+                    tokenizer.pop();
+                    continue;
+                }
+                if(!isName(token)) {
+                    throw Error.InvalidCommandException;
+                }
+                columns.add(token);
+                hasColumn = true;
+                tokenizer.pop();
+            }
+            if(!hasColumn) {
+                throw Error.InvalidCommandException;
+            }
+        }
 
         if(!eq(tokenizer.peek(), "values")) {
             throw Error.InvalidCommandException;
@@ -252,40 +286,54 @@ public class Parser {
         if(!reachStatementEnd(tokenizer)) {
             throw Error.InvalidCommandException;
         }
+        if(columns != null) {
+            insert.columns = columns.toArray(new String[0]);
+        }
         insert.values = values.toArray(new String[0]);
         return insert;
     }
 
     private static Select parseSelect(Tokenizer tokenizer) throws Exception {
         Select read = new Select();
-
         List<String> fields = new ArrayList<>();
-        String asterisk = tokenizer.peek();
-        if("*".equals(asterisk)) {
-            fields.add(asterisk);
-            tokenizer.pop();
-        } else {
-            while(true) {
-                String field = tokenizer.peek();
-                if(!isName(field)) {
+        List<Aggregate> aggregates = new ArrayList<>();
+        List<Select.Item> projection = new ArrayList<>();
+        while(true) {
+            String token = tokenizer.peek();
+            if(isAggregateFunc(token)) {
+                Aggregate agg = parseAggregate(tokenizer);
+                String alias = parseAliasIfPresent(tokenizer);
+                aggregates.add(agg);
+                projection.add(Select.Item.ofAggregate(agg, alias));
+            } else {
+                if(!"*".equals(token) && !isName(token)) {
                     throw Error.InvalidCommandException;
                 }
-                fields.add(field);
+                String column = token;
                 tokenizer.pop();
-                if(",".equals(tokenizer.peek())) {
-                    tokenizer.pop();
-                } else {
-                    break;
-                }
+                String alias = parseAliasIfPresent(tokenizer);
+                fields.add(column);
+                projection.add(Select.Item.ofColumn(column, alias));
             }
+            if(",".equals(tokenizer.peek())) {
+                tokenizer.pop();
+                continue;
+            }
+            break;
         }
-        read.fields = fields.toArray(new String[fields.size()]);
+        if(!fields.isEmpty()) {
+            read.fields = fields.toArray(new String[0]);
+        }
+        if(!aggregates.isEmpty()) {
+            read.aggregates = aggregates.toArray(new Aggregate[0]);
+        }
+        read.projection = projection.toArray(new Select.Item[0]);
+
 
         if(!eq(tokenizer.peek(), "from")) {
             throw Error.InvalidCommandException;
         }
         tokenizer.pop();
-
         String tableName = tokenizer.peek();
         if(!isName(tableName)) {
             throw Error.InvalidCommandException;
@@ -293,20 +341,25 @@ public class Parser {
         read.tableName = tableName;
         tokenizer.pop();
 
-        String tmp = tokenizer.peek();
-        if("".equals(tmp)) {
+        if(eq(tokenizer.peek(), "where")) {
+            read.where = parseWhere(tokenizer);
+        } else {
             read.where = null;
-            return read;
-        } else if(";".equals(tmp)) {
-            tokenizer.pop();
-            if(!reachStatementEnd(tokenizer)) {
-                throw Error.InvalidCommandException;
-            }
-            read.where = null;
-            return read;
         }
 
-        read.where = parseWhere(tokenizer);
+        if(eq(tokenizer.peek(), "group")) {
+            read.groupBy = parseGroupBy(tokenizer);
+        }
+        if(eq(tokenizer.peek(), "having")) {
+            tokenizer.pop();
+            read.having = parseHaving(tokenizer, read);
+        }
+        if(";".equals(tokenizer.peek())) {
+            tokenizer.pop();
+        }
+        if(!reachStatementEnd(tokenizer)) {
+            throw Error.InvalidCommandException;
+        }
         return read;
     }
 
@@ -318,32 +371,33 @@ public class Parser {
         }
         tokenizer.pop();
 
-        SingleExpression exp1 = parseSingleExp(tokenizer);
-        where.singleExp1 = exp1;
+        where.singleExp1 = parseSingleExp(tokenizer);
 
         String logicOpToken = tokenizer.peek();
         if(";".equals(logicOpToken)) {
             tokenizer.pop();
             where.logicOp = "";
-            if(!reachStatementEnd(tokenizer)) {
-                throw Error.InvalidCommandException;
-            }
+            return where;
+        }
+        if("".equals(logicOpToken)) {
+            where.logicOp = "";
+            return where;
+        }
+        // 兼容 SELECT ... WHERE ... GROUP BY ... 场景，where 后直接进入 group
+        if(eq(logicOpToken, "group")) {
+            where.logicOp = "";
             return where;
         }
         LogicOperator lop = LogicOperator.from(logicOpToken);
-        if(lop == LogicOperator.NONE && !"".equals(logicOpToken)) {
+        if(lop == LogicOperator.NONE) {
             throw Error.InvalidCommandException;
         }
-        where.logicOp = lop.symbol;
+        where.logicOp = lop.symbol();
         if(lop != LogicOperator.NONE) {
             tokenizer.pop();
-        }
-
-        SingleExpression exp2 = parseSingleExp(tokenizer);
-        where.singleExp2 = exp2;
-
-        if(!reachStatementEnd(tokenizer)) {
-            throw Error.InvalidCommandException;
+            where.singleExp2 = parseSingleExp(tokenizer);
+        } else {
+            where.singleExp2 = null;
         }
         return where;
     }
@@ -363,6 +417,236 @@ public class Parser {
         tokenizer.pop();
         return new SingleExpression(field, operator, value);
     }
+
+    private static String[] parseGroupBy(Tokenizer tokenizer) throws Exception {
+        if(!eq(tokenizer.peek(), "group")) {
+            throw Error.InvalidCommandException;
+        }
+        tokenizer.pop();
+        if(!eq(tokenizer.peek(), "by")) {
+            throw Error.InvalidCommandException;
+        }
+        tokenizer.pop();
+        List<String> groupingColumns = new ArrayList<>();
+        boolean hasGroupingColumns = false;
+        while(true) {
+            String col = tokenizer.peek();
+            if(!isName(col)) {
+                throw Error.InvalidCommandException;
+            }
+            groupingColumns.add(col);
+            hasGroupingColumns = true;
+            tokenizer.pop();
+            if(",".equals(tokenizer.peek())) {
+                tokenizer.pop();
+                continue;
+            }
+            break;
+        }
+        if(!hasGroupingColumns) {
+            throw Error.InvalidCommandException;
+        }
+        return groupingColumns.toArray(new String[0]);
+    }
+
+    private static Condition parseHaving(Tokenizer tokenizer, Select select) throws Exception {
+        if(select.groupBy == null || select.groupBy.length == 0) {
+            throw Error.InvalidCommandException;
+        }
+        return parseHavingOr(tokenizer, select);
+    }
+
+    private static Condition parseHavingOr(Tokenizer tokenizer, Select select) throws Exception {
+        Condition left = parseHavingAnd(tokenizer, select);
+        while(true) {
+            String token = tokenizer.peek();
+            LogicOperator lop = LogicOperator.from(token);
+            if(lop != LogicOperator.OR) break;
+            tokenizer.pop();
+            Condition right = parseHavingAnd(tokenizer, select);
+            left = Condition.ofBinary(left, lop, right);
+        }
+        return left;
+    }
+
+    private static Condition parseHavingAnd(Tokenizer tokenizer, Select select) throws Exception {
+        Condition left = parseHavingFactor(tokenizer, select);
+        while(true) {
+            String token = tokenizer.peek();
+            LogicOperator lop = LogicOperator.from(token);
+            if(lop != LogicOperator.AND) break;
+            tokenizer.pop();
+            Condition right = parseHavingFactor(tokenizer, select);
+            left = Condition.ofBinary(left, lop, right);
+        }
+        return left;
+    }
+
+    /**
+     * 匹配 having 后使用 () 指定的优先级
+     */
+    private static Condition parseHavingFactor(Tokenizer tokenizer, Select select) throws Exception {
+        if("(".equals(tokenizer.peek())) {
+            tokenizer.pop();
+            Condition inner = parseHavingOr(tokenizer, select);
+            if(!")".equals(tokenizer.peek())) {
+                throw Error.InvalidCommandException;
+            }
+            tokenizer.pop();
+            return inner;
+        }
+        return parseHavingPredicate(tokenizer, select);
+    }
+
+    private static Condition parseHavingPredicate(Tokenizer tokenizer, Select select) throws Exception {
+        Operand left = parseHavingOperand(tokenizer, select);
+        String opToken = tokenizer.peek();
+        CompareOperator cop = CompareOperator.from(opToken);
+        if(cop == null) {
+            throw Error.InvalidCommandException;
+        }
+        tokenizer.pop();
+        Operand right = parseHavingOperand(tokenizer, select);
+        return Condition.ofPredicate(left, cop, right);
+    }
+
+    private static Operand parseHavingOperand(Tokenizer tokenizer, Select select) throws Exception {
+        String token = tokenizer.peek();
+        if(isAggregateFunc(token)) {
+            // func ( arg )
+            String funcToken = token;
+            tokenizer.pop();
+            if(!"(".equals(tokenizer.peek())) {
+                throw Error.InvalidCommandException;
+            }
+            tokenizer.pop();
+            String arg = tokenizer.peek();
+            boolean star = "*".equals(arg);
+            if(star) {
+                tokenizer.pop();
+            } else {
+                if(!isName(arg)) {
+                    throw Error.InvalidCommandException;
+                }
+                tokenizer.pop();
+            }
+            if(!")".equals(tokenizer.peek())) {
+                throw Error.InvalidCommandException;
+            }
+            tokenizer.pop();
+            int aggIdx = getAggregateIndex(select, funcToken, star ? null : arg);
+            if(aggIdx < 0) {
+                throw Error.InvalidCommandException;
+            }
+            return Operand.ofAggregate(aggIdx);
+        }
+        if(isName(token)) {
+            // 先看是否是 groupBy 列
+            int groupIdx = getGroupingColumnIndex(select, token);
+            if(groupIdx >= 0) {
+                tokenizer.pop();
+                return Operand.ofColumn(groupIdx);
+            }
+            // 分组列别名（投影中列的别名且原列在 groupBy 中）
+            String column = getColumnByAlias(select, token);
+            if(column != null) {
+                tokenizer.pop();
+                int idx = getGroupingColumnIndex(select, column);
+                return Operand.ofColumn(idx);
+            }
+            // 聚合别名
+            int aggIdx = getAggregateByAlias(select, token);
+            if(aggIdx >= 0) {
+                tokenizer.pop();
+                return Operand.ofAggregate(aggIdx);
+            }
+            throw Error.InvalidCommandException;
+        }
+        // 常量数字
+        if(isNumber(token)) {
+            tokenizer.pop();
+            Object val = token.contains(".") ? Double.parseDouble(token) : Long.parseLong(token);
+            return Operand.ofConstant(val);
+        }
+        throw Error.InvalidCommandException;
+    }
+
+    /**
+     * 判断是否是分组列
+     */
+    private static int getGroupingColumnIndex(Select select, String token) {
+        if(select.groupBy == null) return -1;
+        for (int i = 0; i < select.groupBy.length; i++) {
+            if(select.groupBy[i].equals(token)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * 根据别名获取列
+     */
+    private static String getColumnByAlias(Select select, String alias) {
+        if(select.projection == null || select.groupBy == null) return null;
+        for (Select.Item item : select.projection) {
+            if(item.isAggregate()) continue;
+            if(alias.equals(item.alias)) {
+                for (String col : select.groupBy) {
+                    if(col.equals(item.field)) {
+                        return item.field;
+                    }
+                }
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static int getAggregateIndex(Select select, String funcToken, String arg) {
+        if(select.aggregates == null) return -1;
+        AggregateFunc func = AggregateFunc.from(funcToken);
+        for (int i = 0; i < select.aggregates.length; i++) {
+            Aggregate agg = select.aggregates[i];
+            String aggField = agg.field;
+            boolean matchField = (aggField == null && arg == null)
+                    || (aggField != null && aggField.equals(arg));
+            if(agg.func == func && matchField) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    
+    /**
+     * 根据别名获取聚合列索引值
+     */
+    private static int getAggregateByAlias(Select select, String alias) {
+        if(select.projection == null) return -1;
+        for (int i = 0; i < select.projection.length; i++) {
+            Select.Item item = select.projection[i];
+            if(item.isAggregate() && alias.equals(item.alias)) {
+                // 找到在 aggregates 中的对应下标
+                for (int j = 0; j < select.aggregates.length; j++) {
+                    if(select.aggregates[j] == item.aggregate) {
+                        return j;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static boolean isNumber(String token) {
+        if(token == null || token.isEmpty()) return false;
+        try {
+            Double.parseDouble(token);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
     private static Object parseDrop(Tokenizer tokenizer) throws Exception {
         String target = tokenizer.peek();
         if(eq(target, "table")) {
@@ -373,6 +657,29 @@ public class Parser {
             return parseDropDatabase(tokenizer);
         }
         throw Error.InvalidCommandException;
+    }
+
+    private static String parseAliasIfPresent(Tokenizer tokenizer) throws Exception {
+        String next = tokenizer.peek();
+        if(eq(next, "as")) {
+            tokenizer.pop();
+            String alias = tokenizer.peek();
+            if(!isName(alias)) {
+                throw Error.InvalidCommandException;
+            }
+            tokenizer.pop();
+            return alias;
+        }
+        if(isName(next) 
+            && !eq(next, "from") 
+            && !eq(next, "where") 
+            && !eq(next, "group") 
+            && !eq(next, "having")
+            && !",".equals(next)) {
+            tokenizer.pop();
+            return next;
+        }
+        return null;
     }
 
     private static Drop parseDropTable(Tokenizer tokenizer) throws Exception {
@@ -436,6 +743,7 @@ public class Parser {
         List<String> uniques = new ArrayList<>();
         List<String> indexes = new ArrayList<>();
         boolean primaryDeclared = false;
+        String primaryField = null;
 
         while(true) {
             String token = tokenizer.peek();
@@ -480,7 +788,7 @@ public class Parser {
                 continue;
             }
 
-            // column definition: name type [PRIMARY KEY] [UNIQUE] [INDEX]
+            // [FieldName][TypeName][IndexUid][UniqueFlag][PrimaryFlag]
             if(!isName(token)) {
                 throw Error.InvalidCommandException;
             }
@@ -513,6 +821,7 @@ public class Parser {
                         throw Error.InvalidCommandException;
                     }
                     primaryDeclared = true;
+                    primaryField = fieldName;
                     continue;
                 } else if(eq(next, "unique")) {
                     tokenizer.pop();
@@ -536,7 +845,7 @@ public class Parser {
                 indexes.add(fieldName);
             }
 
-            // after a column def, expect ',' or ')' handled by loop
+            // after a field def, expect ',' or ')' handled by loop
             String sep = tokenizer.peek();
             if(!",".equals(sep) && !")".equals(sep)) {
                 throw Error.InvalidCommandException;
@@ -551,6 +860,11 @@ public class Parser {
         create.fieldType = fTypes.toArray(new String[0]);
         create.unique = uniques.toArray(new String[0]);
         create.index = indexes.toArray(new String[0]);
+        create.primary = primaryField;
+        // 当前要求必须指定主键
+        if(create.primary == null) {
+            throw Error.InvalidCommandException;
+        }
         return create;
     }
 
@@ -652,12 +966,65 @@ public class Parser {
         return use;
     }
 
+    private static Aggregate parseAggregate(Tokenizer tokenizer) throws Exception {
+        String funcToken = tokenizer.peek();
+        tokenizer.pop();
+        if(!"(".equals(tokenizer.peek())) {
+            throw Error.InvalidCommandException;
+        }
+        tokenizer.pop();
+        String arg = tokenizer.peek();
+        boolean star = false;
+        if("*".equals(arg)) {
+            star = true;
+            tokenizer.pop();
+        } else {
+            if(!isName(arg)) {
+                throw Error.InvalidCommandException;
+            }
+            tokenizer.pop();
+        }
+        if(!")".equals(tokenizer.peek())) {
+            throw Error.InvalidCommandException;
+        }
+        tokenizer.pop();
+        AggregateFunc func;
+        try {
+            func = AggregateFunc.from(funcToken);
+        } catch (Exception e) {
+            throw Error.InvalidCommandException;
+        }
+        if(star && !func.allowStar()) {
+            throw Error.InvalidCommandException;
+        }
+        Aggregate agg = new Aggregate();
+        agg.func = func;
+        agg.field = star ? null : arg;
+        return agg;
+    }
+
     /**
      * 判断name 是否合法
      * @param name 被判断的名称
      */
     private static boolean isName(String name) {
-        return !(name.length() == 1 && !Tokenizer.isAlphaBeta(name.getBytes()[0]));
+        if(name == null || name.isEmpty()) {
+            return false;
+        }
+        byte[] bytes = name.getBytes();
+        byte first = bytes[0];
+        // 标识符首字符必须是字母或下划线
+        if(!(Tokenizer.isAlpha(first) || first == '_')) {
+            return false;
+        }
+        // 其余字符可包含字母/数字/下划线
+        for(int i = 1; i < bytes.length; i++) {
+            byte b = bytes[i];
+            if(!(Tokenizer.isAlpha(b) || Tokenizer.isDigit(b) || b == '_')) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -676,8 +1043,19 @@ public class Parser {
         }
     }
 
+    private static boolean isAggregateFunc(String token) {
+        if(token == null) return false;
+        try {
+            AggregateFunc.from(token);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /** 大小写不敏感比较 */
     private static boolean eq(String token, String keyword) {
         return keyword.equalsIgnoreCase(token);
     }
+
 }

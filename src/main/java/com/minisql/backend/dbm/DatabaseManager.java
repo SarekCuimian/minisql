@@ -40,7 +40,7 @@ public class DatabaseManager {
         try {
             Files.createDirectories(root);
         } catch (IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
     }
 
@@ -54,7 +54,7 @@ public class DatabaseManager {
         try {
             create(DEFAULT_DATABASE);
         } catch (Exception e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
     }
 
@@ -71,7 +71,7 @@ public class DatabaseManager {
         String basePath = databaseBasePath(name);
         TransactionManager txm = TransactionManager.create(basePath);
         DataManager dm = DataManager.create(basePath, mem, txm);
-        VersionManager vm = new VersionManagerImpl(txm, dm);
+        VersionManager vm = VersionManager.create(txm, dm);
         TableManager.create(basePath, vm, dm);
         txm.close();
         dm.close();
@@ -144,7 +144,7 @@ public class DatabaseManager {
                 }
             });
         } catch (IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         names.sort(Comparator.naturalOrder());
         return names;
@@ -208,7 +208,7 @@ public class DatabaseManager {
                         try {
                             Files.deleteIfExists(path);
                         } catch (IOException e) {
-                            Panic.panic(e);
+                            Panic.of(e);
                         }
                     });
         }

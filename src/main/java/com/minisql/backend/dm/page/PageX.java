@@ -8,8 +8,7 @@ import com.minisql.backend.utils.ByteUtil;
 /**
  * PageX管理普通页
  * 普通页结构
- * [FreeSpaceOffset] [Data]
- * FreeSpaceOffset: 2字节 空闲位置开始偏移
+ * [FreeSpaceOffset 2B] [Data]
  */
 public class PageX {
 
@@ -44,7 +43,7 @@ public class PageX {
      * @param ofData 期望的空闲空间起始偏移（通常 ≥ {@link #OF_DATA}）
      */
     private static void setFSO(byte[] raw, short ofData) {
-        System.arraycopy(ByteUtil.short2Byte(ofData), 0, raw, OF_FREE, OF_DATA);
+        System.arraycopy(ByteUtil.shortToByte(ofData), 0, raw, OF_FREE, OF_DATA);
     }
 
     /**

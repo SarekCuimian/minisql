@@ -12,9 +12,9 @@ public class PageIndex {
     private static final int INTERVALS_NO = 40;
     private static final int THRESHOLD = PageCache.PAGE_SIZE / INTERVALS_NO;
 
-    private Lock lock;
+    private final Lock lock;
     // 多个 PageInfo 列表组成的数组
-    private List<PageInfo>[] lists;
+    private final List<PageInfo>[] lists;
 
     @SuppressWarnings("unchecked")
     public PageIndex() {
@@ -41,7 +41,7 @@ public class PageIndex {
             int number = spaceSize / THRESHOLD;
             if(number < INTERVALS_NO) number ++;
             while(number <= INTERVALS_NO) {
-                if(lists[number].size() == 0) {
+                if(lists[number].isEmpty()) {
                     number ++;
                     continue;
                 }

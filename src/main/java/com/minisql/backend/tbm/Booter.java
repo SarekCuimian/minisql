@@ -22,13 +22,13 @@ public class Booter {
         File f = new File(path + BOOTER_SUFFIX);
         try {
             if(!f.createNewFile()) {
-                Panic.panic(Error.FileExistsException);
+                Panic.of(Error.FileExistsException);
             }
         } catch (Exception e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.panic(Error.FileCannotRWException);
+            Panic.of(Error.FileCannotRWException);
         }
         return new Booter(path, f);
     }
@@ -37,10 +37,10 @@ public class Booter {
         removeBadTmp(path);
         File f = new File(path+BOOTER_SUFFIX);
         if(!f.exists()) {
-            Panic.panic(Error.FileNotExistsException);
+            Panic.of(Error.FileNotExistsException);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.panic(Error.FileCannotRWException);
+            Panic.of(Error.FileCannotRWException);
         }
         return new Booter(path, f);
     }
@@ -63,7 +63,7 @@ public class Booter {
         try {
             buf = Files.readAllBytes(file.toPath());
         } catch (IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         return buf;
     }
@@ -73,25 +73,25 @@ public class Booter {
         try {
             tmp.createNewFile();
         } catch (Exception e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         if(!tmp.canRead() || !tmp.canWrite()) {
-            Panic.panic(Error.FileCannotRWException);
+            Panic.of(Error.FileCannotRWException);
         }
         try(FileOutputStream out = new FileOutputStream(tmp)) {
             out.write(data);
             out.flush();
         } catch(IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         try {
             Files.move(tmp.toPath(), new File(path+BOOTER_SUFFIX).toPath(), StandardCopyOption.REPLACE_EXISTING);
         } catch(IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         file = new File(path+BOOTER_SUFFIX);
         if(!file.canRead() || !file.canWrite()) {
-            Panic.panic(Error.FileCannotRWException);
+            Panic.of(Error.FileCannotRWException);
         }
     }
 

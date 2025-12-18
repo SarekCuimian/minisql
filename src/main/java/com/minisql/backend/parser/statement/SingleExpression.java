@@ -1,6 +1,6 @@
 package com.minisql.backend.parser.statement;
 
-import com.minisql.backend.tbm.CompareOperator;
+import com.minisql.backend.parser.statement.operator.CompareOperator;
 
 public class SingleExpression {
     public final String field;

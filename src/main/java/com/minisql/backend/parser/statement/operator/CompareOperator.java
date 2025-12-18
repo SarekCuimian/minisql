@@ -1,4 +1,4 @@
-package com.minisql.backend.tbm;
+package com.minisql.backend.parser.statement.operator;
 
 import com.minisql.common.Error;
 
@@ -49,6 +49,9 @@ public enum CompareOperator {
     public abstract boolean match(int cmp);
 
     public static CompareOperator from(String symbol) throws Exception {
+        if (symbol == null) {
+            throw Error.InvalidLogOpException;
+        }
         for (CompareOperator op : values()) {
             for (String s : op.symbols) {
                 if (s.equals(symbol)) {

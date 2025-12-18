@@ -25,16 +25,16 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
 
     private AtomicInteger pageNumbers;
 
-    PageCacheImpl(RandomAccessFile file, FileChannel fileChannel, int maxResource) {
-        super(maxResource);
-        if(maxResource < MEM_MIN_LIM) {
-            Panic.panic(Error.MemTooSmallException);
+    PageCacheImpl(RandomAccessFile file, FileChannel fileChannel, int capacity) {
+        super(capacity);
+        if(capacity < MEM_MIN_LIM) {
+            Panic.of(Error.MemTooSmallException);
         }
         long length = 0;
         try {
             length = file.length();
         } catch (IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         this.file = file;
         this.fc = fileChannel;
@@ -57,7 +57,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
      * 根据pageNumber从数据库文件中读取页数据，并包裹成Page
      */
     @Override
-    protected Page getForCache(long key) throws Exception {
+    protected Page loadCache(long key) throws Exception {
         int pgno = (int)key;
         long offset = PageCacheImpl.pageOffset(pgno);
 
@@ -67,14 +67,14 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
             fc.position(offset);
             fc.read(buf);
         } catch(IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         fileLock.unlock();
         return new PageImpl(pgno, buf.array(), this);
     }
 
     @Override
-    protected void releaseForCache(Page pg) {
+    protected void flushCache(Page pg) {
         if(pg.isDirty()) {
             flush(pg);
             pg.setDirty(false);
@@ -100,18 +100,18 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
             fc.write(buf);
             fc.force(false);
         } catch(IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         } finally {
             fileLock.unlock();
         }
     }
 
-    public void truncateByBgno(int maxPgno) {
+    public void truncateByPgno(int maxPgno) {
         long size = pageOffset(maxPgno + 1);
         try {
             file.setLength(size);
         } catch (IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         pageNumbers.set(maxPgno);
     }
@@ -123,7 +123,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
             fc.close();
             file.close();
         } catch (IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
     }
 

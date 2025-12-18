@@ -6,17 +6,17 @@ import java.util.concurrent.locks.ReentrantLock;
 import com.minisql.backend.dm.page.cache.PageCache;
 
 public class PageImpl implements Page {
-    private int pageNumber;
-    private byte[] data;
+    private final int pageNumber;
+    private final byte[] data;
     private boolean dirty;
-    private Lock lock;
+    private final Lock lock;
     
-    private PageCache pc;
+    private final PageCache cache;
 
-    public PageImpl(int pageNumber, byte[] data, PageCache pc) {
+    public PageImpl(int pageNumber, byte[] data, PageCache pageCache) {
         this.pageNumber = pageNumber;
         this.data = data;
-        this.pc = pc;
+        this.cache = pageCache;
         lock = new ReentrantLock();
     }
 
@@ -29,7 +29,7 @@ public class PageImpl implements Page {
     }
 
     public void release() {
-        pc.release(this);
+        cache.release(this);
     }
 
     public void setDirty(boolean dirty) {

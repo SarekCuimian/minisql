@@ -20,16 +20,16 @@ public interface TransactionManager {
     void close();
 
     static TransactionManagerImpl create(String path) {
-        File f = new File(path+TransactionManagerImpl.XID_SUFFIX);
+        File f = new File(path + TransactionManagerImpl.XID_SUFFIX);
         try {
             if(!f.createNewFile()) {
-                Panic.panic(Error.FileExistsException);
+                Panic.of(Error.FileExistsException);
             }
         } catch (Exception e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.panic(Error.FileCannotRWException);
+            Panic.of(Error.FileCannotRWException);
         }
 
         FileChannel fc = null;
@@ -38,28 +38,28 @@ public interface TransactionManager {
             raf = new RandomAccessFile(f, "rw");
             fc = raf.getChannel();
         } catch (FileNotFoundException e) {
-           Panic.panic(e);
+           Panic.of(e);
         }
 
         // 写空XID文件头
-        ByteBuffer buf = ByteBuffer.wrap(new byte[TransactionManagerImpl.LEN_XID_HEADER_LENGTH]);
+        ByteBuffer buf = ByteBuffer.wrap(new byte[TransactionManagerImpl.XID_HEADER_SIZE]);
         try {
             fc.position(0);
             fc.write(buf);
         } catch (IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         
         return new TransactionManagerImpl(raf, fc);
     }
 
     static TransactionManagerImpl open(String path) {
-        File f = new File(path+TransactionManagerImpl.XID_SUFFIX);
+        File f = new File(path + TransactionManagerImpl.XID_SUFFIX);
         if(!f.exists()) {
-            Panic.panic(Error.FileNotExistsException);
+            Panic.of(Error.FileNotExistsException);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.panic(Error.FileCannotRWException);
+            Panic.of(Error.FileCannotRWException);
         }
 
         FileChannel fc = null;
@@ -68,7 +68,7 @@ public interface TransactionManager {
             raf = new RandomAccessFile(f, "rw");
             fc = raf.getChannel();
         } catch (FileNotFoundException e) {
-           Panic.panic(e);
+           Panic.of(e);
         }
 
         return new TransactionManagerImpl(raf, fc);

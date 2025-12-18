@@ -2,6 +2,7 @@ package com.minisql.backend.tbm;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.locks.Lock;
@@ -12,12 +13,13 @@ import com.minisql.backend.parser.statement.Begin;
 import com.minisql.backend.parser.statement.Create;
 import com.minisql.backend.parser.statement.Delete;
 import com.minisql.backend.parser.statement.Describe;
+import com.minisql.backend.parser.statement.Drop;
 import com.minisql.backend.parser.statement.Insert;
 import com.minisql.backend.parser.statement.Select;
 import com.minisql.backend.parser.statement.Show;
 import com.minisql.backend.parser.statement.Update;
 import com.minisql.backend.utils.ByteUtil;
-import com.minisql.common.OpResult;
+import com.minisql.common.QueryResult;
 import com.minisql.common.ResultSet;
 import com.minisql.backend.vm.IsolationLevel;
 import com.minisql.backend.vm.VersionManager;
@@ -26,23 +28,21 @@ import com.minisql.common.Error;
 public class TableManagerImpl implements TableManager {
     VersionManager vm;
     DataManager dm;
-    private Booter booter;
-    private Map<String, Table> tableCache;
-    private Map<Long, List<Table>> xidTableCache;
-    private Lock lock;
+    private final Booter booter;
+    private final Map<String, Table> tableCache;
+    private final Lock lock;
     
     TableManagerImpl(VersionManager vm, DataManager dm, Booter booter) {
         this.vm = vm;
         this.dm = dm;
         this.booter = booter;
         this.tableCache = new HashMap<>();
-        this.xidTableCache = new HashMap<>();
         lock = new ReentrantLock();
         loadTables();
     }
 
     /**
-     * 加载所有表
+     * 加载当前库所有表的元数据到内存
      */
     private void loadTables() {
         long uid = firstTableUid();
@@ -62,53 +62,52 @@ public class TableManagerImpl implements TableManager {
 
     /**
      * 更新第一个表的uid
-     * @param uid
+     * @param uid 表 uid
      */
     private void updateFirstTableUid(long uid) {
-        byte[] raw = ByteUtil.long2Byte(uid);
+        byte[] raw = ByteUtil.longToByte(uid);
         booter.update(raw);
     }
 
     @Override
-    public BeginRes begin(Begin begin) {
-        BeginRes res = new BeginRes();
+    public VersionManager getVersionManager() {
+        return vm;
+    }
+
+    @Override
+    public DataManager getDataManager() {
+        return dm;
+    }
+
+    @Override
+    public BeginResult begin(Begin begin) {
+        BeginResult res = new BeginResult();
         IsolationLevel level = begin.isolationLevel == null ? IsolationLevel.READ_COMMITTED : begin.isolationLevel;
         res.xid = vm.begin(level);
-        res.result = OpResult.message("begin", 0);
+        res.result = QueryResult.message("begin", 0);
         return res;
     }
     @Override
-    public OpResult commit(long xid) throws Exception {
+    public QueryResult commit(long xid) throws Exception {
         vm.commit(xid);
-        return OpResult.message("commit", 0);
+        return QueryResult.message("commit", 0);
     }
     @Override
-    public OpResult abort(long xid) {
+    public QueryResult abort(long xid) {
         vm.abort(xid);
-        return OpResult.message("abort", 0);
+        return QueryResult.message("abort", 0);
     }
     @Override
-    public OpResult show(long xid, Show show) {
+    public QueryResult show(long xid, Show show) {
         // SHOW DATABASES 在 Executor 里直接处理，这里统一返回当前库的表列表
         return showTables(xid);
     }
     @Override
-    public OpResult describe(long xid, Describe describe) throws Exception {
+    public QueryResult describe(long xid, Describe describe) throws Exception {
         Table table;
         lock.lock();
         try {
             table = tableCache.get(describe.tableName);
-            if(table == null) {
-                List<Table> pending = xidTableCache.get(xid);
-                if(pending != null) {
-                    for (Table tb : pending) {
-                        if(tb.name.equals(describe.tableName)) {
-                            table = tb;
-                            break;
-                        }
-                    }
-                }
-            }
         } finally {
             lock.unlock();
         }
@@ -120,10 +119,16 @@ public class TableManagerImpl implements TableManager {
         for (Field field : table.fields) {
             List<String> row = new ArrayList<>();
             row.add(field.fieldName);
-            row.add(field.fieldType);
-            row.add("YES");
-            if(field.isUnique()) {
+            row.add(field.getTypeName());
+            if(field.isPrimary()) {
+                row.add("NO");
+            } else {
+                row.add("YES");
+            }
+            if(field.isPrimary()) {
                 row.add("PRI");
+            } else if(field.isUnique()) {
+                row.add("UNI");
             } else if(field.isIndexed()) {
                 row.add("MUL");
             } else {
@@ -133,10 +138,59 @@ public class TableManagerImpl implements TableManager {
             row.add("");
             rows.add(row);
         }
-        return OpResult.resultSet(new ResultSet(headers, rows));
+        return QueryResult.resultSet(new ResultSet(headers, rows));
     }
+
     @Override
-    public OpResult create(long xid, Create create) throws Exception {
+    public QueryResult drop(long xid, Drop drop) throws Exception {
+        lock.lock();
+        try {
+            // 通过 uid -> Table 映射按链表顺序查找目标表
+            Map<Long, Table> uidTableMap = new HashMap<>();
+            for (Table tb : tableCache.values()) {
+                uidTableMap.put(tb.uid, tb);
+            }
+            // 获取头节点 uid
+            long uid = firstTableUid();
+            Table pre = null;
+            Table cur = null;
+            while(uid != 0) {
+                Table tb = uidTableMap.get(uid);
+                if(tb == null) {
+                    break;
+                }
+                if(tb.name.equals(drop.tableName)) {
+                    cur = tb;
+                    break;
+                }
+                pre = tb;
+                uid = tb.nextUid;
+            }
+            if(cur == null) {
+                throw Error.TableNotFoundException;
+            }
+            long successorUid = cur.nextUid;
+            if(pre == null) {
+                // 删除头节点，直接更新 booter
+                updateFirstTableUid(successorUid);
+            } else {
+                // 就地覆盖前驱的 nextUid
+                byte[] raw = vm.read(xid, pre.uid);
+                int pos = ByteUtil.parseString(raw).size; // 跳过表名
+                System.arraycopy(ByteUtil.longToByte(successorUid), 0, raw, pos, 8);
+                vm.update(xid, pre.uid, raw);
+                pre.nextUid = successorUid;
+            }
+
+            tableCache.remove(cur.name);
+            return QueryResult.message("drop table " + drop.tableName, 0);
+        } finally {
+            lock.unlock();
+        }
+    }
+    
+    @Override
+    public QueryResult create(long xid, Create create) throws Exception {
         lock.lock();
         try {
             if(tableCache.containsKey(create.tableName)) {
@@ -145,17 +199,13 @@ public class TableManagerImpl implements TableManager {
             Table table = Table.createTable(this, firstTableUid(), xid, create);
             updateFirstTableUid(table.uid);
             tableCache.put(create.tableName, table);
-            if(!xidTableCache.containsKey(xid)) {
-                xidTableCache.put(xid, new ArrayList<>());
-            }
-            xidTableCache.get(xid).add(table);
-            return OpResult.message("create " + create.tableName, 0);
+            return QueryResult.message("create " + create.tableName, 0);
         } finally {
             lock.unlock();
         }
     }
     @Override
-    public OpResult insert(long xid, Insert insert) throws Exception {
+    public QueryResult insert(long xid, Insert insert) throws Exception {
         lock.lock();
         Table table = tableCache.get(insert.tableName);
         lock.unlock();
@@ -163,26 +213,20 @@ public class TableManagerImpl implements TableManager {
             throw Error.TableNotFoundException;
         }
         table.insert(xid, insert);
-        return OpResult.message("insert", 1);
+        return QueryResult.message("insert", 1);
     }
 
     /**
      * 显示所有表
-     * @param xid
+     * @param xid 事务 id
      * @return
      */
-    private OpResult showTables(long xid) {
+    private QueryResult showTables(long xid) {
         lock.lock();
-        List<String> names = new ArrayList<>();
+        LinkedHashSet<String> names = new LinkedHashSet<>();
         try {
             for (Table tb : tableCache.values()) {
                 names.add(tb.name);
-            }
-            List<Table> pending = xidTableCache.get(xid);
-            if(pending != null) {
-                for (Table tb : pending) {
-                    names.add(tb.name);
-                }
             }
         } finally {
             lock.unlock();
@@ -192,11 +236,11 @@ public class TableManagerImpl implements TableManager {
         for (String name : names) {
             rows.add(List.of(name));
         }
-        return OpResult.resultSet(new ResultSet(List.of(header), rows));
+        return QueryResult.resultSet(new ResultSet(List.of(header), rows));
     }
 
     @Override
-    public OpResult read(long xid, Select read) throws Exception {
+    public QueryResult read(long xid, Select read) throws Exception {
         lock.lock();
         Table table = tableCache.get(read.tableName);
         lock.unlock();
@@ -204,10 +248,10 @@ public class TableManagerImpl implements TableManager {
             throw Error.TableNotFoundException;
         }
         ResultSet data = table.read(xid, read);
-        return OpResult.resultSet(data);
+        return QueryResult.resultSet(data);
     }
     @Override
-    public OpResult update(long xid, Update update) throws Exception {
+    public QueryResult update(long xid, Update update) throws Exception {
         lock.lock();
         Table table = tableCache.get(update.tableName);
         lock.unlock();
@@ -215,10 +259,10 @@ public class TableManagerImpl implements TableManager {
             throw Error.TableNotFoundException;
         }
         int count = table.update(xid, update);
-        return OpResult.message("update", count);
+        return QueryResult.message("update", count);
     }
     @Override
-    public OpResult delete(long xid, Delete delete) throws Exception {
+    public QueryResult delete(long xid, Delete delete) throws Exception {
         lock.lock();
         Table table = tableCache.get(delete.tableName);
         lock.unlock();
@@ -226,9 +270,12 @@ public class TableManagerImpl implements TableManager {
             throw Error.TableNotFoundException;
         }
         int count = table.delete(xid, delete);
-        return OpResult.message("delete", count);
+        return QueryResult.message("delete", count);
     }
 
+    /**
+     * 获取当前数据库名称
+     */
     private String currentDatabaseName() {
         String path = booter.getPath();
         if(path == null || path.isEmpty()) {
@@ -242,6 +289,6 @@ public class TableManagerImpl implements TableManager {
         if(idx == -1) {
             return path;
         }
-        return path.substring(idx+1);
+        return path.substring(idx + 1);
     }
 }

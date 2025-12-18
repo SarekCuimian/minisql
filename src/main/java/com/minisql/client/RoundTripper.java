@@ -4,7 +4,7 @@ import com.minisql.transport.Package;
 import com.minisql.transport.Packager;
 
 public class RoundTripper {
-    private Packager packager;
+    private final Packager packager;
 
     public RoundTripper(Packager packager) {
         this.packager = packager;

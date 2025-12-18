@@ -11,14 +11,14 @@ import com.minisql.common.Error;
 
 public interface PageCache {
     
-    public static final int PAGE_SIZE = 1 << 13;
+    int PAGE_SIZE = 1 << 13;
 
     int newPage(byte[] initData);
     Page getPage(int pgno) throws Exception;
     void close();
     void release(Page page);
 
-    void truncateByBgno(int maxPgno);
+    void truncateByPgno(int maxPgno);
     int getPageNumber();
     void flushPage(Page pg);
 
@@ -26,13 +26,13 @@ public interface PageCache {
         File f = new File(path+PageCacheImpl.DB_SUFFIX);
         try {
             if(!f.createNewFile()) {
-                Panic.panic(Error.FileExistsException);
+                Panic.of(Error.FileExistsException);
             }
         } catch (Exception e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.panic(Error.FileCannotRWException);
+            Panic.of(Error.FileCannotRWException);
         }
 
         FileChannel fc = null;
@@ -41,7 +41,7 @@ public interface PageCache {
             raf = new RandomAccessFile(f, "rw");
             fc = raf.getChannel();
         } catch (FileNotFoundException e) {
-           Panic.panic(e);
+           Panic.of(e);
         }
         return new PageCacheImpl(raf, fc, (int)memory/PAGE_SIZE);
     }
@@ -49,10 +49,10 @@ public interface PageCache {
     public static PageCacheImpl open(String path, long memory) {
         File f = new File(path+PageCacheImpl.DB_SUFFIX);
         if(!f.exists()) {
-            Panic.panic(Error.FileNotExistsException);
+            Panic.of(Error.FileNotExistsException);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.panic(Error.FileCannotRWException);
+            Panic.of(Error.FileCannotRWException);
         }
 
         FileChannel fc = null;
@@ -61,7 +61,7 @@ public interface PageCache {
             raf = new RandomAccessFile(f, "rw");
             fc = raf.getChannel();
         } catch (FileNotFoundException e) {
-           Panic.panic(e);
+           Panic.of(e);
         }
         return new PageCacheImpl(raf, fc, (int)memory/PAGE_SIZE);
     }

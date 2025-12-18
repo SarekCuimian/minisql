@@ -1,102 +1,136 @@
 package com.minisql.backend.common;
 
+import com.minisql.common.Error;
+
 import java.util.HashMap;
-import java.util.Set;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit; // 引入 TimeUnit
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-import com.minisql.common.Error;
-
 /**
- * AbstractCache 实现了一个引用计数策略的缓存
+ * 引用计数 + LRU 的并发安全缓存
+ * 容量满时优先淘汰“最近最少使用且引用计数为零”的缓存项
  */
 public abstract class AbstractCache<T> {
-    private HashMap<Long, T> cache;                     // 实际缓存的数据
-    private HashMap<Long, Integer> references;          // 元素的引用个数
-    private HashMap<Long, Boolean> getting;             // 正在获取某资源的线程
+    
+    // 字段名优化：使用 Resource<T>
+    /** 维护缓存项的 LRU 容器，同时存储值和引用计数 */
+    private final LinkedHashMap<Long, Resource<T>> cache; 
+    /** 正在加载的 key 集合，避免重复加载 */
+    private final Map<Long, Boolean> loading;
+    /** 最大容量（0 表示不限制） */
+    private final int capacity;
+    private int size = 0;
+    private final Lock lock = new ReentrantLock();
 
-    private int maxResource;                            // 缓存的最大缓存资源数
-    private int count = 0;                              // 缓存中元素的个数
-    private Lock lock;
+    private static final long LOAD_WAIT_MILLIS = 1;
 
-    public AbstractCache(int maxResource) {
-        this.maxResource = maxResource;
-        cache = new HashMap<>();
-        references = new HashMap<>();
-        getting = new HashMap<>();
-        lock = new ReentrantLock();
+    /**
+     * 内部类：缓存中的资源项，封装了实际值和引用计数。
+     */
+    private static class Resource<T> {
+        final T value;
+        int referenceCount = 1;
+
+        Resource(T value) {
+            this.value = value;
+        }
+    }
+    public AbstractCache(int capacity) {
+        this.capacity = capacity;
+        // LinkedHashMap 的 accessOrder=true 确保 LRU 特性
+        this.cache = new LinkedHashMap<>(16, 0.75f, true);
+        this.loading = new HashMap<>();
     }
 
+    /**
+     * 获取资源，命中则增加引用，未命中则加载并可能触发 LRU 淘汰
+     * * @param key 缓存键
+     * @return 实际资源对象
+     * @throws Exception 如果加载失败或缓存已满且无法淘汰
+     */
     protected T get(long key) throws Exception {
-        while(true) {
-            lock.lock();
-            if(getting.containsKey(key)) {
-                // 请求的资源正在被其他线程获取
-                lock.unlock();
+        
+        // 1. 锁内处理：尝试命中、检查容量、标记加载
+        lock.lock();
+        try {
+            // 优化：处理并发加载，等待其他线程完成加载
+            while (loading.containsKey(key)) {
+                lock.unlock(); // 释放锁，允许其他线程访问或释放缓存
                 try {
-                    Thread.sleep(1);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                    continue;
+                    TimeUnit.MILLISECONDS.sleep(LOAD_WAIT_MILLIS);
+                } catch (InterruptedException ignore) {
+                    Thread.currentThread().interrupt(); 
                 }
-                continue;
+                lock.lock(); // 重新获取锁，再次检查
             }
-
-            if(cache.containsKey(key)) {
-                // 资源在缓存中，直接返回
-                T obj = cache.get(key);
-                // 引用数加一
-                references.put(key, references.get(key) + 1);
-                lock.unlock();
-                return obj;
+            // 缓存命中
+            Resource<T> hit = cache.get(key);
+            if (hit != null) {
+                hit.referenceCount++; // 引用计数递增
+                return hit.value;
             }
-
-            // 尝试获取该资源
-            if(maxResource > 0 && count == maxResource) {
-                lock.unlock();
-                throw Error.CacheFullException;
+            // 未命中，检查容量
+            if (capacity > 0 && size >= capacity) {
+                if (!evictEldest()) {
+                    throw Error.CacheFullException;
+                }
             }
-            count ++;
-            getting.put(key, true);
+            // 标记正在加载
+            loading.put(key, true);
+        } finally {
             lock.unlock();
-            break;
         }
 
-        T obj = null;
+        // 2. 锁外处理：加载资源（防止阻塞
+        T obj;
         try {
-            obj = getForCache(key);
-        } catch(Exception e) {
+            obj = loadCache(key); // 实际加载
+        } catch (Exception e) {
+            // 加载失败，回滚 loading 标记
             lock.lock();
-            count --;
-            getting.remove(key);
-            lock.unlock();
+            try {
+                loading.remove(key);
+            } finally {
+                lock.unlock();
+            }
             throw e;
         }
 
+        // 3. 锁内处理：写入缓存
         lock.lock();
-        getting.remove(key);
-        cache.put(key, obj);
-        references.put(key, 1);
-        lock.unlock();
-        
+        try {
+            loading.remove(key);
+            
+            // 优化：双重检查，处理并发加载竞争
+            if (cache.containsKey(key)) {
+                // 如果在锁外加载时，有其他线程抢先写入了，释放当前加载的 obj，使用已存在的
+                safelyFlush(obj);
+                Resource<T> existingItem = cache.get(key);
+                existingItem.referenceCount++; 
+                return existingItem.value; 
+            }
+            // 写入缓存，初始引用计数为 1
+            cache.put(key, new Resource<>(obj));
+            size++;
+        } finally {
+            lock.unlock();
+        }
         return obj;
     }
 
     /**
-     * 强行释放一个缓存
+     * 归还一次引用，引用计数减 1
      */
     protected void release(long key) {
         lock.lock();
         try {
-            int ref = references.get(key)-1;
-            if(ref == 0) {
-                T obj = cache.get(key);
-                releaseForCache(obj);
-                references.remove(key);
-                cache.remove(key);
-                count --;
-            } else {
-                references.put(key, ref);
+            Resource<T> e = cache.get(key);
+            if (e != null && e.referenceCount > 0) {
+                e.referenceCount--;
             }
         } finally {
             lock.unlock();
@@ -109,25 +143,53 @@ public abstract class AbstractCache<T> {
     protected void close() {
         lock.lock();
         try {
-            Set<Long> keys = cache.keySet();
-            for (long key : keys) {
-                T obj = cache.get(key);
-                releaseForCache(obj);
-                references.remove(key);
-                cache.remove(key);
+            for (Resource<T> e : cache.values()) {
+                safelyFlush(e.value);
             }
+            cache.clear();
+            loading.clear();
+            size = 0;
         } finally {
             lock.unlock();
         }
     }
 
+    /**
+     * LRU 驱逐一个引用计数为 0 的条目，头部是旧的，尾部是新的
+     */
+    private boolean evictEldest() {
+        // 使用 iterator 遍历 LinkedHashMap 的 LRU 顺序
+        Iterator<Map.Entry<Long, Resource<T>>> it = cache.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Long, Resource<T>> entry = it.next();
+            Resource<T> e = entry.getValue();
+            
+            // 查找引用计数为 0 的项
+            if (e.referenceCount == 0) {
+                safelyFlush(e.value); // 写回资源
+                it.remove(); // 淘汰
+                size--;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void safelyFlush(T obj) {
+        try {
+            flushCache(obj);
+        } catch (Exception ignore) {
+            // 忽略释放时的异常
+        }
+    }
 
     /**
-     * 当资源不在缓存时的获取行为
+     * 当资源不在缓存时的获取行为（由子类实现）
      */
-    protected abstract T getForCache(long key) throws Exception;
+    protected abstract T loadCache(long key) throws Exception;
+
     /**
-     * 当资源被驱逐时的写回行为
+     * 当资源被驱逐或关闭时的写回行为（由子类实现）
      */
-    protected abstract void releaseForCache(T obj);
+    protected abstract void flushCache(T obj);
 }
