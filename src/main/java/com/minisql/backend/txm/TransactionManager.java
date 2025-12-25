@@ -18,6 +18,8 @@ public interface TransactionManager {
     boolean isActive(long xid);
     boolean isCommitted(long xid);
     boolean isAborted(long xid);
+    void updateLastLsn(long xid, long lsn);
+    long getLastLsn(long xid);
     void close();
 
     static TransactionManagerImpl create(String path) {

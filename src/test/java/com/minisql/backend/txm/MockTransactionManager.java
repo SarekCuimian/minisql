@@ -29,6 +29,14 @@ public class MockTransactionManager implements TransactionManager {
     }
 
     @Override
+    public void updateLastLsn(long xid, long lsn) {}
+
+    @Override
+    public long getLastLsn(long xid) {
+        return 0;
+    }
+
+    @Override
     public void close() {}
     
 }

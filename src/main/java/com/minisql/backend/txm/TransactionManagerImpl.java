@@ -56,7 +56,6 @@ public class TransactionManagerImpl implements TransactionManager {
             long xid = xidCounter + 1;
             updateXidStatus(xid, ACTIVE);
             incrementXidCounter();
-            lastLsnMap.put(xid, 0L);
             return xid;
         } finally {
             wLock.unlock();
@@ -124,6 +123,22 @@ public class TransactionManagerImpl implements TransactionManager {
         } finally {
             rLock.unlock();
         }
+    }
+
+    @Override
+    public void updateLastLsn(long xid, long lsn) {
+        if (xid <= SUPER_XID) {
+            return;
+        }
+        lastLsnMap.merge(xid, lsn, Math::max);
+    }
+
+    @Override
+    public long getLastLsn(long xid) {
+        if (xid <= SUPER_XID) {
+            return 0L;
+        }
+        return lastLsnMap.getOrDefault(xid, 0L);
     }
 
     @Override
@@ -210,6 +225,5 @@ public class TransactionManagerImpl implements TransactionManager {
     private long getXidPosition(long xid) {
         return XID_HEADER_SIZE + (xid - 1) * XID_STATUS_SIZE;
     }
-
 
 }
