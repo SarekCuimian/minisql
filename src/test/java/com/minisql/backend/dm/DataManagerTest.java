@@ -49,7 +49,7 @@ public class DataManagerTest {
                     try {
                         u1 = dm1.insert(0, data);
                     } catch(Exception e) {
-                        Panic.of(e);
+                        Panic.panic(e);
                     }
                     uidsLock.lock();
                     uids0.add(u0);
@@ -68,7 +68,7 @@ public class DataManagerTest {
                     try {
                         data0 = dm0.read(u0);
                     } catch (Exception e) {
-                        Panic.of(e);
+                        Panic.panic(e);
                         continue;
                     }
                     if(data0 == null) continue;

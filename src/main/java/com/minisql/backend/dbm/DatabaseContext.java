@@ -21,11 +21,15 @@ public class DatabaseContext {
     private final VersionManager vm;
     private final TableManager tbm;
 
-    /** 当前有多少个 Executor 持有这个上下文（连接/会话等） */
+    /** 当前有多少“使用者”持有这个上下文（连接/会话等） */
     private final AtomicInteger refCount = new AtomicInteger(0);
 
-    DatabaseContext(String name, String basePath,
-                    TransactionManager txm, DataManager dm, VersionManager vm, TableManager tbm) {
+    DatabaseContext(String name,
+                    String basePath,
+                    TransactionManager txm,
+                    DataManager dm,
+                    VersionManager vm,
+                    TableManager tbm) {
         this.name = name;
         this.basePath = basePath;
         this.txm = txm;

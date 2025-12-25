@@ -69,7 +69,7 @@ public class Launcher {
             return DEFAULT_MEM;
         }
         if(memStr.length() < 2) {
-            Panic.of(Error.InvalidMemException);
+            Panic.panic(Error.InvalidMemException);
         }
         String unit = memStr.substring(memStr.length()-2);
         long memNum = Long.parseLong(memStr.substring(0, memStr.length()-2));
@@ -81,7 +81,7 @@ public class Launcher {
             case "GB":
                 return memNum * GB;
             default:
-                Panic.of(Error.InvalidMemException);
+                Panic.panic(Error.InvalidMemException);
         }
         return DEFAULT_MEM;
     }

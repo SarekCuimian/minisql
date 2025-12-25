@@ -4,8 +4,6 @@ import java.util.List;
 
 import com.minisql.backend.dbm.DatabaseContext;
 import com.minisql.backend.dbm.DatabaseManager;
-
-import org.checkerframework.checker.units.qual.s;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -18,17 +16,16 @@ import com.minisql.backend.parser.statement.Create;
 import com.minisql.backend.parser.statement.CreateDatabase;
 import com.minisql.backend.parser.statement.Delete;
 import com.minisql.backend.parser.statement.Describe;
-import com.minisql.backend.parser.statement.Drop;
 import com.minisql.backend.parser.statement.DropDatabase;
 import com.minisql.backend.parser.statement.Insert;
 import com.minisql.backend.parser.statement.Select;
 import com.minisql.backend.parser.statement.Show;
 import com.minisql.backend.parser.statement.Update;
 import com.minisql.backend.parser.statement.Use;
-import com.minisql.backend.tbm.BeginResult;
+import com.minisql.backend.tbm.BeginRes;
 import com.minisql.backend.tbm.TableManager;
 import com.minisql.common.ExecResult;
-import com.minisql.common.QueryResult;
+import com.minisql.common.OpResult;
 import com.minisql.common.ResultSet;
 import com.minisql.common.Error;
 
@@ -52,21 +49,12 @@ public class Executor {
 
     private final DatabaseManager databaseManager;
     private DatabaseContext dbContext;
-    /** 用于日志的客户端标识（ip:port 或自定义），允许为空 */
-    private final String clientId;
 
-    /** 构造 Executor，绑定数据库管理器 */
-    public Executor(DatabaseManager databaseManager, String clientId) {
-        this.databaseManager = databaseManager;
-        this.clientId = clientId;
-        this.xid = 0;
-        tryUseDefaultDatabase();
-    }
+    /** 构造 Executor，绑定数据库提供者 */
     public Executor(DatabaseManager databaseManager) {
         this.databaseManager = databaseManager;
         this.xid = 0;
-        clientId = "default";
-        tryUseDefaultDatabase();
+        trySelectDefaultDatabase();
     }
 
     /**
@@ -92,10 +80,7 @@ public class Executor {
      * @throws Exception SQL 执行过程中出现的异常
      */
     public ExecResult execute(byte[] sql) throws Exception {
-        String sqlLog = new String(sql);
-        sqlLog.replace("\r", "").replace("\n", "");
-        LOGGER.info("[client={}] Execute: {}", clientId, sqlLog);
-
+        System.out.println("Execute: " + new String(sql));
         Object stat = Parser.parse(sql);
 
         if(Use.class.isInstance(stat)) {
@@ -109,34 +94,34 @@ public class Executor {
 
         // BEGIN
         } else if(Begin.class.isInstance(stat)) {
-            TableManager tbm = getTableManager();
+            TableManager tbm = tableManager();
             if(xid != 0) {
                 throw Error.NestedTransactionException;
             }
             long start = System.nanoTime();
-            BeginResult r = tbm.begin((Begin) stat);
+            BeginRes r = tbm.begin((Begin) stat);
             xid = r.xid;
             return ExecResult.from(r.result, resultType(stat), System.nanoTime() - start);
 
         // COMMIT
         } else if(Commit.class.isInstance(stat)) {
-            TableManager tbm = getTableManager();
+            TableManager tbm = tableManager();
             if(xid == 0) {
                 throw Error.NoTransactionException;
             }
             long start = System.nanoTime();
-            QueryResult res = tbm.commit(xid);
+            OpResult res = tbm.commit(xid);
             xid = 0;
             return ExecResult.from(res, resultType(stat), System.nanoTime() - start);
 
         // ROLLBACK
         } else if(Abort.class.isInstance(stat)) {
-            TableManager tbm = getTableManager();
+            TableManager tbm = tableManager();
             if(xid == 0) {
                 throw Error.NoTransactionException;
             }
             long start = System.nanoTime();
-            QueryResult res = tbm.abort(xid);
+            OpResult res = tbm.abort(xid);
             xid = 0;
             return ExecResult.from(res, resultType(stat), System.nanoTime() - start);
 
@@ -156,32 +141,30 @@ public class Executor {
         // SHOW DATABASES 不依赖具体 DB，单独处理
         if(stat instanceof Show && ((Show) stat).target == Show.Target.DATABASES) {
             long start = System.nanoTime();
-            QueryResult payload = showDatabases();
+            OpResult payload = showDatabases();
             return ExecResult.from(payload, resultType(stat), System.nanoTime() - start);
         }
 
-        TableManager tbm = getTableManager();
+        TableManager tbm = tableManager();
         boolean tmpTransaction = false;
         Exception e = null;
 
         // 自动开始临时事务（如果当前不在事务中）
         if(xid == 0) {
             tmpTransaction = true;
-            BeginResult r = tbm.begin(new Begin());
+            BeginRes r = tbm.begin(new Begin());
             xid = r.xid;
         }
 
         long start = System.nanoTime();
         try {
-            QueryResult res = null;
+            OpResult res = null;
             if(Show.class.isInstance(stat)) {
                 res = tbm.show(xid, (Show)stat);
             } else if(Describe.class.isInstance(stat)) {
                 res = tbm.describe(xid, (Describe)stat);
             } else if(Create.class.isInstance(stat)) {
                 res = tbm.create(xid, (Create)stat);
-            } else if(Drop.class.isInstance(stat)) {
-                res = tbm.drop(xid, (Drop)stat);
             } else if(Select.class.isInstance(stat)) {
                 res = tbm.read(xid, (Select)stat);
             } else if(Insert.class.isInstance(stat)) {
@@ -232,14 +215,14 @@ public class Executor {
         databaseManager.release(dbContext);
         dbContext = newCtx;
         long start = System.nanoTime();
-        QueryResult payload = QueryResult.message("Database changed to " + use.databaseName, 0);
+        OpResult payload = OpResult.message("Database changed to " + use.databaseName, 0);
         return ExecResult.from(payload, resultType(use), System.nanoTime() - start);
     }
 
     private ExecResult handleCreateDatabase(CreateDatabase createDatabase) throws Exception {
         long start = System.nanoTime();
         databaseManager.create(createDatabase.databaseName);
-        QueryResult payload = QueryResult.message("create database " + createDatabase.databaseName, 0);
+        OpResult payload = OpResult.message("create database " + createDatabase.databaseName, 0);
         return ExecResult.from(payload, resultType(createDatabase), System.nanoTime() - start);
     }
 
@@ -251,11 +234,11 @@ public class Executor {
         }
         long start = System.nanoTime();
         databaseManager.drop(dropDatabase.databaseName);
-        QueryResult payload = QueryResult.message("drop database " + dropDatabase.databaseName, 0);
+        OpResult payload = OpResult.message("drop database " + dropDatabase.databaseName, 0);
         return ExecResult.from(payload, resultType(dropDatabase), System.nanoTime() - start);
     }
 
-    private TableManager getTableManager() throws Exception {
+    private TableManager tableManager() throws Exception {
         if(dbContext == null) {
             throw Error.NoDatabaseSelectedException;
         }
@@ -271,16 +254,16 @@ public class Executor {
     /*
     * 获取数据库列表
      */
-    private QueryResult showDatabases() {
+    private OpResult showDatabases() {
         List<String> dbs = databaseManager.show();
         List<List<String>> rows = new java.util.ArrayList<>();
         for (String db : dbs) {
             rows.add(List.of(db));
         }
-        return QueryResult.resultSet(new ResultSet(List.of("Database"), rows));
+        return OpResult.resultSet(new ResultSet(List.of("Database"), rows));
     }
 
-    private void tryUseDefaultDatabase() {
+    private void trySelectDefaultDatabase() {
         String defaultDb = databaseManager.defaultDatabaseName();
         if(defaultDb == null) {
             return;
@@ -309,7 +292,7 @@ public class Executor {
             return;
         }
         try {
-            getTableManager().abort(currentXid);
+            tableManager().abort(currentXid);
         } catch (Exception abortErr) {
             LOGGER.warn("Auto abort transaction {} failed: {}", currentXid, abortErr.getMessage());
         } finally {

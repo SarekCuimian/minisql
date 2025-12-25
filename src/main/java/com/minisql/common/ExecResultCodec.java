@@ -8,11 +8,11 @@ import java.nio.charset.StandardCharsets;
  * Codec 编解码器
  * 负责在网络上传输 {@link ExecResult} 的编解码工具。
  */
-public final class ExecResultEncoder {
+public final class ExecResultCodec {
 
     private static final Gson GSON = new Gson();
 
-    private ExecResultEncoder() {
+    private ExecResultCodec() {
     }
 
     public static byte[] encode(ExecResult result) {
@@ -33,19 +33,19 @@ public final class ExecResultEncoder {
 
     private static class Content {
         ExecResult.Type type;
-        QueryResult queryResult;
+        OpResult opResult;
         long elapsedNanos;
 
         static Content from(ExecResult result) {
             Content content = new Content();
             content.type = result.getType();
-            content.queryResult = result.getOpResult();
+            content.opResult = result.getOpResult();
             content.elapsedNanos = result.getElapsedNanos();
             return content;
         }
 
         ExecResult toResult() {
-            return ExecResult.from(queryResult, type, elapsedNanos);
+            return ExecResult.from(opResult, type, elapsedNanos);
         }
     }
 }

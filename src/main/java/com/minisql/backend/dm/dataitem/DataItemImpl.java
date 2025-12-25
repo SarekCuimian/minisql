@@ -9,7 +9,7 @@ import com.minisql.backend.dm.DataManagerImpl;
 import com.minisql.backend.dm.page.Page;
 
 /**
- * DataItem 结构如下：
+ * dataitem 结构如下：
  * [ValidFlag] [DataSize] [Data]
  * ValidFlag 1字节，0为合法，1为非法
  * DataSize  2字节，标识Data的长度
@@ -24,19 +24,19 @@ public class DataItemImpl implements DataItem {
     static final int OF_DATA = 3;
 
     /** 当前 DataItem 在页面中的数据视图（包含头部与数据） */
-    private final SubArray raw;
+    private SubArray raw;
     /** 修改前的旧数据，用于回滚或 WAL before image */
-    private final byte[] oldRaw;
+    private byte[] oldRaw;
     /** 读锁 */
-    private final Lock rLock;
+    private Lock rLock;
     /** 写锁 */
-    private final Lock wLock;
+    private Lock wLock;
     /** 所属 DataManager 实例 */
-    private final DataManagerImpl dm;
+    private DataManagerImpl dm;
     /** 全局唯一标识 UID（pageNo + offset） */
-    private final long uid;
+    private long uid;
     /** 当前 DataItem 所在的 Page */
-    private final Page pg;
+    private Page pg;
 
     /**
      * 构造函数
@@ -93,6 +93,19 @@ public class DataItemImpl implements DataItem {
     }
 
     /**
+     * 在修改失败或异常回滚时调用：
+     * <ul>
+     *   <li>将 oldRaw 拷贝回原数据位置，恢复修改前的状态</li>
+     *   <li>释放写锁</li>
+     * </ul>
+     */
+    @Override
+    public void unBefore() {
+        System.arraycopy(oldRaw, 0, raw.raw, raw.start, oldRaw.length);
+        wLock.unlock();
+    }
+
+    /**
      * 在修改成功时调用：
      * <ul>
      *   <li>调用 DataManager 记录 WAL 日志</li>
@@ -104,19 +117,6 @@ public class DataItemImpl implements DataItem {
     @Override
     public void after(long xid) {
         dm.logDataItem(xid, this);
-        wLock.unlock();
-    }
-
-    /**
-     * 在修改失败或异常回滚时调用：
-     * <ul>
-     *   <li>将 oldRaw 拷贝回原数据位置，恢复修改前的状态</li>
-     *   <li>释放写锁</li>
-     * </ul>
-     */
-    @Override
-    public void rollback() {
-        System.arraycopy(oldRaw, 0, raw.raw, raw.start, oldRaw.length);
         wLock.unlock();
     }
 

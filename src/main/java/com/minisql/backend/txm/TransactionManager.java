@@ -8,7 +8,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 
 import com.minisql.backend.utils.Panic;
-import com.minisql.backend.utils.FileChannelUtil;
 import com.minisql.common.Error;
 
 public interface TransactionManager {
@@ -21,16 +20,16 @@ public interface TransactionManager {
     void close();
 
     static TransactionManagerImpl create(String path) {
-        File f = new File(path + TransactionManagerImpl.XID_SUFFIX);
+        File f = new File(path+TransactionManagerImpl.XID_SUFFIX);
         try {
             if(!f.createNewFile()) {
-                Panic.of(Error.FileExistsException);
+                Panic.panic(Error.FileExistsException);
             }
         } catch (Exception e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.of(Error.FileCannotRWException);
+            Panic.panic(Error.FileCannotRWException);
         }
 
         FileChannel fc = null;
@@ -39,27 +38,28 @@ public interface TransactionManager {
             raf = new RandomAccessFile(f, "rw");
             fc = raf.getChannel();
         } catch (FileNotFoundException e) {
-           Panic.of(e);
+           Panic.panic(e);
         }
 
         // 写空XID文件头
-        ByteBuffer buf = ByteBuffer.wrap(new byte[TransactionManagerImpl.XID_HEADER_SIZE]);
+        ByteBuffer buf = ByteBuffer.wrap(new byte[TransactionManagerImpl.LEN_XID_HEADER_LENGTH]);
         try {
-            FileChannelUtil.writeFully(fc, buf, 0);
+            fc.position(0);
+            fc.write(buf);
         } catch (IOException e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
         
         return new TransactionManagerImpl(raf, fc);
     }
 
     static TransactionManagerImpl open(String path) {
-        File f = new File(path + TransactionManagerImpl.XID_SUFFIX);
+        File f = new File(path+TransactionManagerImpl.XID_SUFFIX);
         if(!f.exists()) {
-            Panic.of(Error.FileNotExistsException);
+            Panic.panic(Error.FileNotExistsException);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.of(Error.FileCannotRWException);
+            Panic.panic(Error.FileCannotRWException);
         }
 
         FileChannel fc = null;
@@ -68,7 +68,7 @@ public interface TransactionManager {
             raf = new RandomAccessFile(f, "rw");
             fc = raf.getChannel();
         } catch (FileNotFoundException e) {
-           Panic.of(e);
+           Panic.panic(e);
         }
 
         return new TransactionManagerImpl(raf, fc);

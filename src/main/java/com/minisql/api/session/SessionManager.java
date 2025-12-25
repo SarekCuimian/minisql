@@ -4,7 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Component;
-import com.minisql.api.config.MiniSqlConfig;
+import com.minisql.api.config.MiniSqlProperties;
 import com.minisql.api.exception.SessionNotFoundException;
 
 import java.io.IOException;
@@ -23,20 +23,20 @@ public class SessionManager implements DisposableBean {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SessionManager.class);
 
-    private final MiniSqlConfig config;
-    private final Map<String, ManagedSession> managed = new ConcurrentHashMap<>();
+    private final MiniSqlProperties properties;
+    private final Map<String, ManagedSession> sessions = new ConcurrentHashMap<>();
 
-    public SessionManager(MiniSqlConfig config) {
-        this.config = config;
+    public SessionManager(MiniSqlProperties properties) {
+        this.properties = properties;
     }
 
     /**
      * 创建一个新的 session，并返回 sessionId。
      */
     public String createSession() throws IOException {
-        MiniSqlSession session = new MiniSqlSessionImpl(config.getHost(), config.getPort());
+        MiniSqlSession session = new MiniSqlSessionImpl(properties.getHost(), properties.getPort());
         String sessionId = UUID.randomUUID().toString();
-        managed.put(sessionId, new ManagedSession(session));
+        sessions.put(sessionId, new ManagedSession(session));
         return sessionId;
     }
 
@@ -44,7 +44,7 @@ public class SessionManager implements DisposableBean {
      * 根据 sessionId 获取会话，不存在时抛出异常。
      */
     public MiniSqlSession getSession(String sessionId) {
-        ManagedSession managed = this.managed.get(sessionId);
+        ManagedSession managed = sessions.get(sessionId);
         if (managed == null) {
             throw new SessionNotFoundException(sessionId);
         }
@@ -58,7 +58,7 @@ public class SessionManager implements DisposableBean {
      * @return true 表示存在且已关闭，false 表示 sessionId 不存在
      */
     public boolean closeSession(String sessionId) {
-        ManagedSession managed = this.managed.remove(sessionId);
+        ManagedSession managed = sessions.remove(sessionId);
         if (managed == null) {
             return false;
         }
@@ -68,8 +68,8 @@ public class SessionManager implements DisposableBean {
 
     @Override
     public void destroy() {
-        managed.forEach((sessionId, managed) -> close(sessionId, managed.session));
-        managed.clear();
+        sessions.forEach((sessionId, managed) -> close(sessionId, managed.session));
+        sessions.clear();
     }
 
     private void close(String sessionId, MiniSqlSession session) {

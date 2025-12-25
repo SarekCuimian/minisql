@@ -13,15 +13,11 @@ import com.minisql.backend.utils.RandomUtil;
  */
 public class PageOne {
 
-    /**
-     * 校验区起始偏移量（第 100 字节）
-     */
-    private static final int OF_VALID_CHECK = 100;
+    /** 校验区起始偏移量（第 100 字节） */
+    private static final int OF_VC = 100;
 
-    /**
-     * 校验区长度（8 字节）
-     */
-    private static final int VALID_CHECK_SIZE = 8;
+    /** 校验区长度（8 字节） */
+    private static final int LEN_VC = 8;
 
     /**
      * 初始化数据库第一页的数据。
@@ -29,7 +25,7 @@ public class PageOne {
      *
      * @return 初始化后的原始页数据字节数组
      */
-    public static byte[] initRaw() {
+    public static byte[] InitRaw() {
         byte[] raw = new byte[PageCache.PAGE_SIZE];
         setVcOpen(raw);
         return raw;
@@ -51,11 +47,7 @@ public class PageOne {
      * @param raw 页数据字节数组
      */
     private static void setVcOpen(byte[] raw) {
-        System.arraycopy(
-                RandomUtil.randomBytes(VALID_CHECK_SIZE), 0,
-                raw, OF_VALID_CHECK,
-                VALID_CHECK_SIZE
-        );
+        System.arraycopy(RandomUtil.randomBytes(LEN_VC), 0, raw, OF_VC, LEN_VC);
     }
 
     /**
@@ -76,11 +68,7 @@ public class PageOne {
      * @param raw 页数据字节数组
      */
     private static void setVcClose(byte[] raw) {
-        System.arraycopy(
-                raw, OF_VALID_CHECK,
-                raw, OF_VALID_CHECK + VALID_CHECK_SIZE,
-                VALID_CHECK_SIZE
-        );
+        System.arraycopy(raw, OF_VC, raw, OF_VC + LEN_VC, LEN_VC);
     }
 
     /**
@@ -88,7 +76,7 @@ public class PageOne {
      *
      * @param pg 页对象
      * @return 若 100~107 与 108~115 字节内容一致，返回 {@code true}；
-     * 否则返回 {@code false}
+     *         否则返回 {@code false}
      */
     public static boolean checkVc(Page pg) {
         return checkVc(pg.getData());
@@ -102,8 +90,8 @@ public class PageOne {
      */
     private static boolean checkVc(byte[] raw) {
         return Arrays.equals(
-                Arrays.copyOfRange(raw, OF_VALID_CHECK, OF_VALID_CHECK + VALID_CHECK_SIZE),
-                Arrays.copyOfRange(raw, OF_VALID_CHECK + VALID_CHECK_SIZE, OF_VALID_CHECK + 2 * VALID_CHECK_SIZE)
+                Arrays.copyOfRange(raw, OF_VC, OF_VC + LEN_VC),
+                Arrays.copyOfRange(raw, OF_VC + LEN_VC, OF_VC + 2 * LEN_VC)
         );
     }
 }

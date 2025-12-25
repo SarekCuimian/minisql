@@ -22,13 +22,13 @@ public interface Logger {
         File f = new File(path+LoggerImpl.LOG_SUFFIX);
         try {
             if(!f.createNewFile()) {
-                Panic.of(Error.FileExistsException);
+                Panic.panic(Error.FileExistsException);
             }
         } catch (Exception e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.of(Error.FileCannotRWException);
+            Panic.panic(Error.FileCannotRWException);
         }
 
         FileChannel fc = null;
@@ -37,16 +37,16 @@ public interface Logger {
             raf = new RandomAccessFile(f, "rw");
             fc = raf.getChannel();
         } catch (FileNotFoundException e) {
-            Panic.of(e);
+           Panic.panic(e);
         }
 
-        ByteBuffer buf = ByteBuffer.wrap(ByteUtil.intToByte(0));
+        ByteBuffer buf = ByteBuffer.wrap(ByteUtil.int2Byte(0));
         try {
             fc.position(0);
             fc.write(buf);
             fc.force(false);
         } catch (IOException e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
 
         return new LoggerImpl(raf, fc, 0);
@@ -55,10 +55,10 @@ public interface Logger {
     public static Logger open(String path) {
         File f = new File(path+LoggerImpl.LOG_SUFFIX);
         if(!f.exists()) {
-            Panic.of(Error.FileNotExistsException);
+            Panic.panic(Error.FileNotExistsException);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.of(Error.FileCannotRWException);
+            Panic.panic(Error.FileCannotRWException);
         }
 
         FileChannel fc = null;
@@ -67,7 +67,7 @@ public interface Logger {
             raf = new RandomAccessFile(f, "rw");
             fc = raf.getChannel();
         } catch (FileNotFoundException e) {
-            Panic.of(e);
+           Panic.panic(e);
         }
 
         LoggerImpl lg = new LoggerImpl(raf, fc);

@@ -1,7 +1,7 @@
 package com.minisql.client;
 
 import com.minisql.common.ExecResult;
-import com.minisql.common.ExecResultEncoder;
+import com.minisql.common.ExecResultCodec;
 import com.minisql.transport.Package;
 import com.minisql.transport.Packager;
 
@@ -14,18 +14,17 @@ public class Client {
 
     public ExecResult execute(byte[] stat) throws Exception {
         Package pkg = new Package(stat, null);
-        Package respkg = rt.roundTrip(pkg);
-        if(respkg.getExc() != null) {
-            throw respkg.getExc();
+        Package resPkg = rt.roundTrip(pkg);
+        if(resPkg.getExc() != null) {
+            throw resPkg.getExc();
         }
-        // 传输层收到的 payload，再经结果序列化层解码为 ExecResult
-        return ExecResultEncoder.decode(respkg.getData());
+        return ExecResultCodec.decode(resPkg.getData());
     }
 
     public void close() {
         try {
             rt.close();
-        } catch (Exception ignored) {
+        } catch (Exception e) {
         }
     }
 

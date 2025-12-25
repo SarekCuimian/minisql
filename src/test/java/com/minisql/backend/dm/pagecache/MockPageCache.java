@@ -43,17 +43,17 @@ public class MockPageCache implements PageCache {
     public void close() {}
 
     @Override
-    public void releasePage(Page page) {}
+    public void release(Page page) {}
 
     @Override
-    public void truncateByPgno(int maxPgno) {}
+    public void truncateByBgno(int maxPgno) {}
 
     @Override
-    public int getPageCount() {
+    public int getPageNumber() {
         return noPages.intValue();
     }
 
     @Override
-    public void persistPage(Page pg) {}
+    public void flushPage(Page pg) {}
     
 }

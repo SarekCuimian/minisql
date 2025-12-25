@@ -33,12 +33,12 @@ public class LoggerImpl implements Logger {
     private static final int OF_SIZE = 0;
     private static final int OF_CHECKSUM = OF_SIZE + 4;
     private static final int OF_DATA = OF_CHECKSUM + 4;
-
+    
     public static final String LOG_SUFFIX = ".log";
 
-    private final RandomAccessFile file;
-    private final FileChannel fc;
-    private final Lock lock;
+    private RandomAccessFile file;
+    private FileChannel fc;
+    private Lock lock;
 
     private long position;  // 当前日志指针的位置
     private long fileSize;  // 初始化时记录，log操作不更新
@@ -62,10 +62,10 @@ public class LoggerImpl implements Logger {
         try {
             size = file.length();
         } catch (IOException e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
         if(size < 4) {
-            Panic.of(Error.BadLogFileException);
+            Panic.panic(Error.BadLogFileException);
         }
 
         ByteBuffer raw = ByteBuffer.allocate(4);
@@ -73,7 +73,7 @@ public class LoggerImpl implements Logger {
             fc.position(0);
             fc.read(raw);
         } catch (IOException e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
         int xChecksum = ByteUtil.parseInt(raw.array());
         this.fileSize = size;
@@ -93,18 +93,18 @@ public class LoggerImpl implements Logger {
             xCheck = calChecksum(xCheck, log);
         }
         if(xCheck != xChecksum) {
-            Panic.of(Error.BadLogFileException);
+            Panic.panic(Error.BadLogFileException);
         }
 
         try {
             truncate(position);
         } catch (Exception e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
         try {
             file.seek(position);
         } catch (IOException e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
         rewind();
     }
@@ -128,7 +128,7 @@ public class LoggerImpl implements Logger {
             fc.position(fc.size());
             fc.write(buf);
         } catch(IOException e) {
-            Panic.of(e);
+            Panic.panic(e);
         } finally {
             lock.unlock();
         }
@@ -139,16 +139,16 @@ public class LoggerImpl implements Logger {
         this.xChecksum = calChecksum(this.xChecksum, log);
         try {
             fc.position(0);
-            fc.write(ByteBuffer.wrap(ByteUtil.intToByte(xChecksum)));
+            fc.write(ByteBuffer.wrap(ByteUtil.int2Byte(xChecksum)));
             fc.force(false);
         } catch(IOException e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
     }
 
     private byte[] wrapLog(byte[] data) {
-        byte[] checksum = ByteUtil.intToByte(calChecksum(0, data));
-        byte[] size = ByteUtil.intToByte(data.length);
+        byte[] checksum = ByteUtil.int2Byte(calChecksum(0, data));
+        byte[] size = ByteUtil.int2Byte(data.length);
         return Bytes.concat(size, checksum, data);
     }
 
@@ -174,7 +174,7 @@ public class LoggerImpl implements Logger {
             fc.position(position);
             fc.read(tmp);
         } catch(IOException e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
         int size = ByteUtil.parseInt(tmp.array());
         if(position + size + OF_DATA > fileSize) {
@@ -186,7 +186,7 @@ public class LoggerImpl implements Logger {
             fc.position(position);
             fc.read(buf);
         } catch(IOException e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
 
         byte[] log = buf.array();
@@ -228,8 +228,8 @@ public class LoggerImpl implements Logger {
             fc.close();
             file.close();
         } catch(IOException e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
     }
-
+    
 }

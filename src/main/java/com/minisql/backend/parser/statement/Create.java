@@ -6,8 +6,4 @@ public class Create {
     public String[] fieldType;
     public String[] index;
     public String[] unique;
-    /**
-     * 主键列名（仅允许单主键）
-     */
-    public String primary;
 }

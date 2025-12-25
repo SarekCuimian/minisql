@@ -11,14 +11,14 @@ import java.util.concurrent.TimeUnit;
 
 import com.minisql.backend.dbm.DatabaseManager;
 import com.minisql.common.ExecResult;
-import com.minisql.common.ExecResultEncoder;
+import com.minisql.common.ExecResultCodec;
 import com.minisql.transport.Encoder;
 import com.minisql.transport.Package;
 import com.minisql.transport.Packager;
 import com.minisql.transport.Transporter;
 
 public class Server {
-    private final int port;
+    private int port;
     private final DatabaseManager databaseManager;
     private final AtomicBoolean running = new AtomicBoolean(false);
     private ServerSocket serverSocket;
@@ -89,8 +89,8 @@ public class Server {
 }
 
 class HandleSocket implements Runnable {
-    private final Socket socket;
-    private final DatabaseManager databaseManager;
+    private Socket socket;
+    private DatabaseManager databaseManager;
 
     public HandleSocket(Socket socket, DatabaseManager databaseManager) {
         this.socket = socket;
@@ -103,9 +103,9 @@ class HandleSocket implements Runnable {
         System.out.println("Establish connection: " + address.getAddress().getHostAddress()+":"+address.getPort());
         Packager packager = null;
         try {
-            Transporter transporter = new Transporter(socket);
-            Encoder encoder = new Encoder();
-            packager = new Packager(transporter, encoder);
+            Transporter t = new Transporter(socket);
+            Encoder e = new Encoder();
+            packager = new Packager(t, e);
         } catch(IOException e) {
             e.printStackTrace();
             try {
@@ -115,8 +115,7 @@ class HandleSocket implements Runnable {
             }
             return;
         }
-        String clientId = address.getAddress().getHostAddress()+":"+address.getPort();
-        Executor exe = new Executor(databaseManager, clientId);
+        Executor exe = new Executor(databaseManager);
         while(true) {
             Package pkg = null;
             try {
@@ -129,13 +128,12 @@ class HandleSocket implements Runnable {
             Exception e = null;
             try {
                 ExecResult execResult = exe.execute(sql);
-                // 业务结果 → JSON 字节（结果序列化层）
-                result = ExecResultEncoder.encode(execResult);
+                // 将 execResult 编码成字节数组 byte[]
+                result = ExecResultCodec.encode(execResult);
             } catch (Exception e1) {
                 e = e1;
                 e.printStackTrace();
             }
-            // JSON 字节 → Package（传输封包层，首字节标识异常/正常）
             pkg = new Package(result, e);
             try {
                 packager.send(pkg);

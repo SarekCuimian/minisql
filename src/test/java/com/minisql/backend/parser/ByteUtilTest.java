@@ -18,7 +18,7 @@ import com.minisql.backend.vm.IsolationLevel;
 public class ByteUtilTest {
     @Test
     public void testCreate() throws Exception {
-        String stat = "create table student id int32, name string, uid int64, (fsm name id uid)";
+        String stat = "create table student id int32, name string, uid int64, (index name id uid)";
         Object res = Parser.parse(stat.getBytes());
         Create create = (Create)res;
         assert "student".equals(create.tableName);

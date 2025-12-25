@@ -71,7 +71,7 @@ public class PageCacheTest {
                 try {
                     pg = pc1.getPage(pgno);
                 } catch (Exception e) {
-                    Panic.of(e);
+                    Panic.panic(e);
                 }
                 noPages1.incrementAndGet();
                 pg.release();
@@ -85,7 +85,7 @@ public class PageCacheTest {
                 try {
                     pg = pc1.getPage(pgno);
                 } catch (Exception e) {
-                    Panic.of(e);
+                    Panic.panic(e);
                 }
                 pg.release();
             }
@@ -138,12 +138,12 @@ public class PageCacheTest {
                 try {
                     pg = pc2.getPage(pgno);
                 } catch (Exception e) {
-                    Panic.of(e);
+                    Panic.panic(e);
                 }
                 try {
                     mpg = mpc.getPage(pgno);
                 } catch (Exception e) {
-                    Panic.of(e);
+                    Panic.panic(e);
                 }
                 pg.lock();
                 assert Arrays.equals(mpg.getData(), pg.getData());
@@ -158,12 +158,12 @@ public class PageCacheTest {
                 try {
                     pg = pc2.getPage(pgno);
                 } catch (Exception e) {
-                    Panic.of(e);
+                    Panic.panic(e);
                 }
                 try {
                     mpg = mpc.getPage(pgno);
                 } catch (Exception e) {
-                    Panic.of(e);
+                    Panic.panic(e);
                 }
                 byte[] newData = RandomUtil.randomBytes(PageCache.PAGE_SIZE);
                 

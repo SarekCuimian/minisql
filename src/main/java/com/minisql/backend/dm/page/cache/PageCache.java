@@ -11,33 +11,28 @@ import com.minisql.common.Error;
 
 public interface PageCache {
     
-    int PAGE_SIZE = 1 << 13;
+    public static final int PAGE_SIZE = 1 << 13;
 
     int newPage(byte[] initData);
-
     Page getPage(int pgno) throws Exception;
-
-    void releasePage(Page page);
-
     void close();
+    void release(Page page);
 
-    void truncateByPgno(int maxPgno);
+    void truncateByBgno(int maxPgno);
+    int getPageNumber();
+    void flushPage(Page pg);
 
-    int getPageCount();
-
-    void persistPage(Page pg);
-
-    static PageCacheImpl create(String path, long memory) {
+    public static PageCacheImpl create(String path, long memory) {
         File f = new File(path+PageCacheImpl.DB_SUFFIX);
         try {
             if(!f.createNewFile()) {
-                Panic.of(Error.FileExistsException);
+                Panic.panic(Error.FileExistsException);
             }
         } catch (Exception e) {
-            Panic.of(e);
+            Panic.panic(e);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.of(Error.FileCannotRWException);
+            Panic.panic(Error.FileCannotRWException);
         }
 
         FileChannel fc = null;
@@ -46,18 +41,18 @@ public interface PageCache {
             raf = new RandomAccessFile(f, "rw");
             fc = raf.getChannel();
         } catch (FileNotFoundException e) {
-           Panic.of(e);
+           Panic.panic(e);
         }
         return new PageCacheImpl(raf, fc, (int)memory/PAGE_SIZE);
     }
 
-    static PageCacheImpl open(String path, long memory) {
+    public static PageCacheImpl open(String path, long memory) {
         File f = new File(path+PageCacheImpl.DB_SUFFIX);
         if(!f.exists()) {
-            Panic.of(Error.FileNotExistsException);
+            Panic.panic(Error.FileNotExistsException);
         }
         if(!f.canRead() || !f.canWrite()) {
-            Panic.of(Error.FileCannotRWException);
+            Panic.panic(Error.FileCannotRWException);
         }
 
         FileChannel fc = null;
@@ -66,7 +61,7 @@ public interface PageCache {
             raf = new RandomAccessFile(f, "rw");
             fc = raf.getChannel();
         } catch (FileNotFoundException e) {
-           Panic.of(e);
+           Panic.panic(e);
         }
         return new PageCacheImpl(raf, fc, (int)memory/PAGE_SIZE);
     }

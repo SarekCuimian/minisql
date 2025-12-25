@@ -12,23 +12,22 @@ public class ExecResult {
     }
 
     private final Type type;
-    private final QueryResult queryResult;
+    private final OpResult opResult;
     private final long elapsedNanos;
 
-    private ExecResult(Type type, QueryResult queryResult, long elapsedNanos) {
+    private ExecResult(Type type, OpResult opResult, long elapsedNanos) {
         this.type = type;
-        this.queryResult = queryResult;
+        this.opResult = opResult;
         this.elapsedNanos = elapsedNanos;
     }
 
-
-    public static ExecResult from(QueryResult queryResult, Type type, long elapsedNanos) {
-        QueryResult effective = queryResult;
+    public static ExecResult from(OpResult opResult, Type type, long elapsedNanos) {
+        OpResult effective = opResult;
         if(effective == null) {
             if(type == Type.RESULT) {
-                effective = QueryResult.resultSet(new ResultSet(java.util.List.of(), java.util.List.of()));
+                effective = OpResult.resultSet(new ResultSet(java.util.List.of(), java.util.List.of()));
             } else {
-                effective = QueryResult.message("", -1);
+                effective = OpResult.message("", -1);
             }
         }
         return new ExecResult(type, effective, elapsedNanos);
@@ -38,27 +37,27 @@ public class ExecResult {
         return type;
     }
 
-    public QueryResult getOpResult() {
-        return queryResult;
+    public OpResult getOpResult() {
+        return opResult;
+    }
+
+    public ResultSet getResultSet() {
+        return opResult == null ? null : opResult.getResultSet();
+    }
+
+    public String getMessage() {
+        return opResult == null ? "" : opResult.getMessage();
     }
 
     public long getElapsedNanos() {
         return elapsedNanos;
     }
 
-    public ResultSet getResultSet() {
-        return queryResult == null ? null : queryResult.getResultSet();
-    }
-
-    public String getMessage() {
-        return queryResult == null ? "" : queryResult.getMessage();
-    }
-
     public int getResultRows() {
-        return queryResult == null ? -1 : queryResult.getResultRows();
+        return opResult == null ? -1 : opResult.getResultRows();
     }
 
     public int getAffectedRows() {
-        return queryResult == null ? -1 : queryResult.getAffectedRows();
+        return opResult == null ? -1 : opResult.getAffectedRows();
     }
 }

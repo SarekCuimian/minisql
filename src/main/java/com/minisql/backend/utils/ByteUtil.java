@@ -9,8 +9,7 @@ public class ByteUtil {
     private ByteUtil() {
     }
 
-    // ----------------- short -----------------
-    public static byte[] shortToByte(short value) {
+    public static byte[] short2Byte(short value) {
         return ByteBuffer.allocate(Short.SIZE / Byte.SIZE).putShort(value).array();
     }
 
@@ -19,8 +18,7 @@ public class ByteUtil {
         return buffer.getShort();
     }
 
-    // ----------------- int -----------------
-    public static byte[] intToByte(int value) {
+    public static byte[] int2Byte(int value) {
         return ByteBuffer.allocate(Integer.SIZE / Byte.SIZE).putInt(value).array();
     }
 
@@ -29,26 +27,33 @@ public class ByteUtil {
         return buffer.getInt();
     }
 
-    // ----------------- long -----------------
-    public static byte[] longToByte(long value) {
-        return ByteBuffer.allocate(Long.SIZE / Byte.SIZE).putLong(value).array();
-    }
-
     public static long parseLong(byte[] buf) {
         ByteBuffer buffer = ByteBuffer.wrap(buf, 0, 8);
         return buffer.getLong();
     }
 
-    // ----------------- String (len + data) -----------------
-    public static byte[] stringToByte(String str) {
-        byte[] l = intToByte(str.length());
+    public static byte[] long2Byte(long value) {
+        return ByteBuffer.allocate(Long.SIZE / Byte.SIZE).putLong(value).array();
+    }
+
+    public static ParseStringRes parseString(byte[] raw) {
+        int length = parseInt(Arrays.copyOf(raw, 4));
+        String str = new String(Arrays.copyOfRange(raw, 4, 4+length));
+        return new ParseStringRes(str, length+4);
+    }
+
+    public static byte[] string2Byte(String str) {
+        byte[] l = int2Byte(str.length());
         return Bytes.concat(l, str.getBytes());
     }
 
-    public static ParsedValue parseString(byte[] raw) {
-        int length = parseInt(Arrays.copyOf(raw, 4));
-        String str = new String(Arrays.copyOfRange(raw, 4, 4 + length));
-        return new ParsedValue(str, length + 4);
+    public static long str2Uid(String key) {
+        long seed = 13331;
+        long res = 0;
+        for(byte b : key.getBytes()) {
+            res = res * seed + (long)b;
+        }
+        return res;
     }
 
 }

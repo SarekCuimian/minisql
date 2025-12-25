@@ -26,7 +26,7 @@ public class PackagerTest {
                     p.send(new Package("pkg3 test".getBytes(), null));
                     ss.close();
                 } catch (Exception e) {
-                    Panic.of(e);
+                    Panic.panic(e);
                 }    
             }
         }).start();

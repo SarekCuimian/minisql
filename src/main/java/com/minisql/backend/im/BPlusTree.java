@@ -24,7 +24,7 @@ public class BPlusTree {
     public static long create(DataManager dm) throws Exception {
         byte[] rawRoot = Node.newNilRootRaw();
         long rootUid = dm.insert(TransactionManagerImpl.SUPER_XID, rawRoot);
-        return dm.insert(TransactionManagerImpl.SUPER_XID, ByteUtil.longToByte(rootUid));
+        return dm.insert(TransactionManagerImpl.SUPER_XID, ByteUtil.long2Byte(rootUid));
     }
 
     public static BPlusTree load(long bootUid, DataManager dm) throws Exception {
@@ -55,7 +55,7 @@ public class BPlusTree {
             long newRootUid = dm.insert(TransactionManagerImpl.SUPER_XID, rootRaw);
             bootDataItem.before();
             SubArray diRaw = bootDataItem.data();
-            System.arraycopy(ByteUtil.longToByte(newRootUid), 0, diRaw.raw, diRaw.start, 8);
+            System.arraycopy(ByteUtil.long2Byte(newRootUid), 0, diRaw.raw, diRaw.start, 8);
             bootDataItem.after(TransactionManagerImpl.SUPER_XID);
         } finally {
             bootLock.unlock();

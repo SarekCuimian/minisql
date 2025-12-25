@@ -1,8 +1,8 @@
 package com.minisql.transport;
 
 public class Packager {
-    private final Transporter transporter;
-    private final Encoder encoder;
+    private Transporter transporter;
+    private Encoder encoder;
 
     public Packager(Transporter transporter, Encoder encoder) {
         this.transporter = transporter;

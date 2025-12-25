@@ -1,15 +1,15 @@
 package com.minisql.backend.dm.pageindex;
 
-import com.minisql.backend.dm.page.fsm.FreeSpaceMap;
-import com.minisql.backend.dm.page.fsm.FreeSpace;
+import com.minisql.backend.dm.page.index.PageIndex;
+import com.minisql.backend.dm.page.index.PageInfo;
 import org.junit.Test;
 
 import com.minisql.backend.dm.page.cache.PageCache;
 
-public class FreeSpaceMapTest {
+public class PageIndexTest {
     @Test
     public void testPageIndex() {
-        FreeSpaceMap pIndex = new FreeSpaceMap();
+        PageIndex pIndex = new PageIndex();
         int threshold = PageCache.PAGE_SIZE / 20;
         for(int i = 0; i < 20; i ++) {
             pIndex.add(i, i*threshold);
@@ -19,7 +19,7 @@ public class FreeSpaceMapTest {
 
         for(int k = 0; k < 3; k ++) {
             for(int i = 0; i < 19; i ++) {
-                FreeSpace pi = pIndex.poll(i * threshold);
+                PageInfo pi = pIndex.select(i * threshold);
                 assert pi != null;
                 assert pi.pgno == i+1;
             }

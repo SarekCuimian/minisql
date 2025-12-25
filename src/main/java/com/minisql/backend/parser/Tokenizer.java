@@ -24,7 +24,7 @@ import com.minisql.common.Error;
 public class Tokenizer {
 
     /** 原始 SQL 字节序列 */
-    private final byte[] stat;
+    private byte[] stat;
 
     /** 当前读取位置（cursor） */
     private int pos;
@@ -149,11 +149,19 @@ public class Tokenizer {
             Byte nb = peekNextByte();
             if(nb != null && isDigit(nb)) {
                 popByte(); // consume '-'
-                return nextNumberState(true);
+                StringBuilder sb = new StringBuilder("-");
+                while(true) {
+                    Byte c = peekByte();
+                    if(c == null || !isDigit(c)) {
+                        if(c != null && isBlank(c)) {
+                            popByte();
+                        }
+                        return sb.toString();
+                    }
+                    sb.append(new String(new byte[]{c}));
+                    popByte();
+                }
             }
-        }
-        if(isDigit(b)) {
-            return nextNumberState(false);
         }
         if (isSymbol(b)) {
             popByte(); // 消费当前符号
@@ -177,46 +185,11 @@ public class Tokenizer {
             
         } else if(b == '"' || b == '\'') {
             return nextQuoteState();
-        } else if(isAlpha(b) || isDigit(b)) {
+        } else if(isAlphaBeta(b) || isDigit(b)) {
             return nextTokenState();
         } else {
             err = Error.InvalidCommandException;
             throw err;
-        }
-    }
-
-    /**
-     * 解析数字，支持可选的小数点（如 1.5）。
-     */
-    private String nextNumberState(boolean negative) {
-        StringBuilder sb = new StringBuilder();
-        if(negative) {
-            sb.append("-");
-        }
-        boolean seenDot = false;
-        while(true) {
-            Byte c = peekByte();
-            if(c == null) {
-                return sb.toString();
-            }
-            if(isDigit(c)) {
-                sb.append(new String(new byte[]{c}));
-                popByte();
-                continue;
-            }
-            if(!seenDot && c == '.') {
-                Byte next = peekNextByte();
-                if(next != null && isDigit(next)) {
-                    seenDot = true;
-                    sb.append('.');
-                    popByte();
-                    continue;
-                }
-            }
-            if(isBlank(c)) {
-                popByte();
-            }
-            return sb.toString();
         }
     }
 
@@ -227,7 +200,7 @@ public class Tokenizer {
         StringBuilder sb = new StringBuilder();
         while(true) {
             Byte b = peekByte();
-            if(b == null || !(isAlpha(b) || isDigit(b) || b == '_')) {
+            if(b == null || !(isAlphaBeta(b) || isDigit(b) || b == '_')) {
                 if(b != null && isBlank(b)) {
                     popByte();
                 }
@@ -244,7 +217,7 @@ public class Tokenizer {
     }
 
     /** 判断是否英文字母 */
-    static boolean isAlpha(byte b) {
+    static boolean isAlphaBeta(byte b) {
         return ((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z'));
     }
 

@@ -8,12 +8,13 @@ import com.minisql.backend.utils.ByteUtil;
 /**
  * PageX管理普通页
  * 普通页结构
- * [FreeSpaceOffset 2B] [Data]
+ * [FreeSpaceOffset] [Data]
+ * FreeSpaceOffset: 2字节 空闲位置开始偏移
  */
 public class PageX {
 
     /** FSO 起始偏移（字节）。固定为 0。 */
-    private static final short OF_FSO = 0;
+    private static final short OF_FREE = 0;
 
     /** 数据区起始偏移（字节）。固定为 2。 */
     private static final short OF_DATA = 2;
@@ -22,7 +23,7 @@ public class PageX {
      * 单页可用最大空闲空间（字节）。
      * <p>等于页大小减去 FSO 占用的 2 字节。</p>
      */
-    public static final int MAX_FREE_SPACE_SIZE = PageCache.PAGE_SIZE - OF_DATA;
+    public static final int MAX_FREE_SPACE = PageCache.PAGE_SIZE - OF_DATA;
 
     /**
      * 初始化一个普通页的原始字节数组，并设置 FSO 指向数据区起始处（偏移 2）。
@@ -43,11 +44,7 @@ public class PageX {
      * @param ofData 期望的空闲空间起始偏移（通常 ≥ {@link #OF_DATA}）
      */
     private static void setFSO(byte[] raw, short ofData) {
-        System.arraycopy(
-                ByteUtil.shortToByte(ofData), 0,
-                raw, OF_FSO,
-                OF_DATA
-        );
+        System.arraycopy(ByteUtil.short2Byte(ofData), 0, raw, OF_FREE, OF_DATA);
     }
 
     /**
@@ -101,7 +98,7 @@ public class PageX {
      * @param pg 目标页
      * @return 空闲空间字节数
      */
-    public static int getFreeSpaceSize(Page pg) {
+    public static int getFreeSpace(Page pg) {
         return PageCache.PAGE_SIZE - (int) getFSO(pg.getData());
     }
 

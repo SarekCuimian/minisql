@@ -10,7 +10,7 @@ public class ExecutorTest {
     String path = "/tmp/mydb";
     long mem = (1 << 20) * 64;
 
-    byte[] CREATE_TABLE = "create table test_table id int32 (fsm id)".getBytes();
+    byte[] CREATE_TABLE = "create table test_table id int32 (index id)".getBytes();
     byte[] INSERT = "insert into test_table values 2333".getBytes();
 
     private DatabaseManager provider;
