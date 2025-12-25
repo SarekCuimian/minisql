@@ -20,6 +20,9 @@ public class Error {
     public static final Exception DeadlockException = new RuntimeException("Deadlock!");
     public static final Exception ConcurrentUpdateException = new RuntimeException("Concurrent conflict detected, transaction rolled back!");
     public static final Exception NullEntryException = new RuntimeException("Null entry!");
+    public static final Exception LockWaitTimeoutException = new RuntimeException("Lock wait timeout exceeded!");
+    public static final Exception TransactionTerminatedException = new RuntimeException("Transaction has been terminated!");
+    public static final Exception MultipleVisibleVersionsException = new RuntimeException("Primary key corruption: multiple visible versions detected!");
 
     // tbm
     public static final Exception InvalidFieldException = new RuntimeException("Invalid field type!");
@@ -27,13 +30,15 @@ public class Error {
     public static final Exception FieldNotIndexedException = new RuntimeException("Field not indexed!");
     public static final Exception InvalidLogOpException = new RuntimeException("Invalid logic operation!");
     public static final Exception InvalidValuesException = new RuntimeException("Invalid values!");
+    public static final Exception PrimaryKeyMissingException = new RuntimeException("Primary key value is required!");
     public static final Exception DuplicatedTableException = new RuntimeException("Duplicated table!");
     public static final Exception TableNotFoundException = new RuntimeException("Table not found!");
     public static final Exception DuplicatedEntryException = new RuntimeException("Duplicate entry!");
+    public static final Exception PrimaryKeyNotUpdatableException = new RuntimeException("Primary key cannot be updated!");
 
     // parser
     public static final Exception InvalidCommandException = new RuntimeException("Invalid command!");
-    public static final Exception TableNoIndexException = new RuntimeException("Table has no index!");
+    public static final Exception TableNoIndexException = new RuntimeException("Table has no fsm!");
     public static final Exception DatabaseExistsException = new RuntimeException("Database already exists!");
     public static final Exception DatabaseNotFoundException = new RuntimeException("Database not found!");
     public static final Exception NoDatabaseSelectedException = new RuntimeException("No database selected!");
@@ -41,7 +46,7 @@ public class Error {
     public static final Exception SwitchDatabaseInTxnException = new RuntimeException("Cannot switch database within a transaction!");
 
     // transport
-    public static final Exception InvalidPkgDataException = new RuntimeException("Invalid package data!");
+    public static final Exception InvalidPkgDataException = new RuntimeException("Invalid package getData!");
 
     // server
     public static final Exception NestedTransactionException = new RuntimeException("Nested transaction not supported!");
@@ -49,4 +54,5 @@ public class Error {
 
     // launcher
     public static final Exception InvalidMemException = new RuntimeException("Invalid memory!");
+
 }

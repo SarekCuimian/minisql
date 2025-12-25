@@ -15,6 +15,7 @@ public class Transaction {
     public Map<Long, Boolean> activeSnapshot;
     public Exception err;
     public boolean autoAborted;
+    public volatile boolean terminated = false;  // ← 新增：事务终止标志
 
     private Transaction() {}
 

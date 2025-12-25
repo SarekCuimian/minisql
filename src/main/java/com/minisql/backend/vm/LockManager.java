@@ -10,7 +10,7 @@ import com.minisql.common.Error;
 /**
  * 维护等待图 + 死锁检测 + 等待/唤醒
  */
-public class LockTable {
+public class LockManager {
 
     /** xid -> 事务节点 */
     private final Map<Long, TNode> transactions = new HashMap<>();
@@ -24,45 +24,34 @@ public class LockTable {
     /** DFS 用时间戳 */
     private int stamp = 1;
 
-    /**
-     * 申请锁：
-     *  - 不需要等待：返回 null
-     *  - 需要等待：返回 CountDownLatch，调用方在 latch.await() 处阻塞
-     *  - 如果形成死锁：抛 DeadlockException
-     */
-    public CountDownLatch add(long xid, long uid) throws Exception {
+    public CountDownLatch acquire(long xid, long uid) throws Exception {
         graphLock.lock();
         try {
             TNode tNode = getOrCreateTNode(xid);
             UNode uNode = getOrCreateUNode(uid);
 
-            // 1. 已经持有该资源，直接返回
+            // 1. 已经持有该资源
             if (tNode.isHolding(uNode)) {
                 return null;
             }
 
-            // 2. 资源没人持有，直接获得
+            // 2. 资源无人持有，直接获得
             if (!uNode.isHeld()) {
                 uNode.setHolder(tNode);
                 tNode.addHolding(uNode);
                 return null;
             }
 
-            // 3. 资源被别人持有，建立等待关系
+            // 3. 资源被其他事务持有，则建立等待关系，每次等待都创建全新 latch
             setupWaiting(tNode, uNode);
 
             // 4. 死锁检测
-            // 当前策略是谁造成死锁谁回滚
             if (hasDeadlock()) {
-                // 回滚刚刚建立的等待关系
                 cleanupWaiting(tNode, uNode);
                 throw Error.DeadlockException;
             }
 
-            // 5. 确认不会死锁，创建一个一次性 latch 返回给调用方
-            if (tNode.getLatch() == null) {
-                tNode.setLatch(new CountDownLatch(1));
-            }
+            // 5. 返回本次等待的 latch
             return tNode.getLatch();
 
         } finally {
@@ -71,119 +60,143 @@ public class LockTable {
     }
 
     /**
-     * 事务结束时释放它持有的所有资源，并唤醒等待者
+     * 释放指定资源的锁，不结束事务，用于更新过程中切换到最新版本。
      */
-    public void remove(long xid) {
+    public void release(long xid, long uid) {
         graphLock.lock();
         try {
             TNode tNode = transactions.get(xid);
-            if (tNode == null) return;
+            UNode uNode = resources.get(uid);
+            if (tNode == null || uNode == null) return;
 
-            // 1. 释放所有持有的资源，依次为每个资源选一个新的持有者
-            for (UNode uNode : tNode.getHoldingSnapshot()) {
+            // 如果正在持有该资源，释放并唤醒下一个等待者
+            if (tNode.isHolding(uNode)) {
+                tNode.removeHolding(uNode);
                 uNode.clearHolder();
                 assignNextHolder(uNode);
+            } else if (tNode.isWaiting() && tNode.getWaiting() == uNode) {
+                // 如果正等待这个资源，清理等待边并唤醒自己
+                uNode.removeWaiter(tNode);
+                CountDownLatch latch = tNode.getLatch();
+                if (latch != null) {
+                    latch.countDown();
+                }
+                tNode.clearWaiting();
+                tNode.setLatch(null);
             }
 
-            // 2. 如果它本身还在某个资源的等待队列里，清理掉
-            if (tNode.isWaiting()) {
-                UNode waitingFor = tNode.getWaiting();
-                waitingFor.removeWaiter(tNode);
+            if (!uNode.hasWaiters() && !uNode.isHeld()) {
+                resources.remove(uid);
             }
-
-            // 3. 从事务表中删除
-            transactions.remove(xid);
-            tNode.clearWaiting();
-            // latch 留着也无所谓，反正这个 TNode 也被移除了
 
         } finally {
             graphLock.unlock();
         }
     }
 
+    /**
+     * 事务结束时释放它持有的所有资源，并唤醒等待者
+     * 注意：按你的要求，这里不对“仍在等待”的事务做 countDown 解除阻塞
+     */
+    public void clear(long xid) {
+        graphLock.lock();
+        try {
+            TNode tNode = transactions.get(xid);
+            if (tNode == null) return;
+
+            // 1. 释放所有持有的资源
+            for (UNode uNode : tNode.getHoldingSnapshot()) {
+                uNode.clearHolder();
+                assignNextHolder(uNode);
+            }
+
+            // 2. 如果它本身还在某个资源的等待队列里，清理掉等待边并唤醒线程
+            if (tNode.isWaiting()) {
+                UNode waitingFor = tNode.getWaiting();
+                if (waitingFor != null) {
+                    waitingFor.removeWaiter(tNode);
+                }
+
+                // 唤醒可能阻塞在 await 上的线程
+                CountDownLatch latch = tNode.getLatch();
+                if (latch != null) {
+                    latch.countDown();
+                }
+                tNode.clearWaiting();
+                tNode.setLatch(null); // 清理引用，避免后续复用
+            }
+
+            // 3. 从事务表中删除
+            transactions.remove(xid);
+
+        } finally {
+            graphLock.unlock();
+        }
+    }
+
+
     // ---------- 内部逻辑 ----------
 
-    /** 建立等待关系：tNode 等待 uNode */
     private void setupWaiting(TNode tNode, UNode uNode) {
         tNode.setWaiting(uNode);
+        tNode.setLatch(new CountDownLatch(1)); // 每次等待边都新建
         uNode.addWaiter(tNode);
     }
 
-    /** 清理等待关系（死锁检测失败时用） */
     private void cleanupWaiting(TNode tNode, UNode uNode) {
         tNode.clearWaiting();
+        tNode.setLatch(null); // 死锁回滚时清掉本次等待 latch
         uNode.removeWaiter(tNode);
     }
 
-    /**
-     * 某个资源释放后，从等待队列中选一个新的事务作为持有者，并唤醒它
-     */
     private void assignNextHolder(UNode uNode) {
         if (!uNode.hasWaiters()) return;
 
         Iterator<TNode> it = uNode.getWaiters().iterator();
         while (it.hasNext()) {
             TNode next = it.next();
-
-            // 事务仍存在，并且还在等待这个资源
-            if (transactions.containsKey(next.xid) &&
-                    next.getWaiting() == uNode) {
-
-                // 把资源交给它
+            // 事务存在且等待边存在
+            if (transactions.containsKey(next.xid) && next.getWaiting() == uNode) {
+                // 交付资源
                 uNode.setHolder(next);
                 next.addHolding(uNode);
                 next.clearWaiting();
 
-                // 唤醒等待它的线程
+                // 唤醒（这是“授予锁”的唤醒）
                 CountDownLatch latch = next.getLatch();
                 if (latch != null) {
-                    // 这里可以在任意线程调用，不需要是“等待线程”
                     latch.countDown();
                 }
+                next.setLatch(null); // 唤醒后清理，避免复用
 
                 it.remove();
                 break;
             } else {
-                // 无效等待者，清理
                 it.remove();
             }
         }
 
-        // 如果等待队列空了，可以考虑移除资源节点（非必须）
         if (!uNode.hasWaiters() && !uNode.isHeld()) {
             resources.remove(uNode.uid);
         }
     }
 
-    /** 死锁检测：有环返回 true */
     private boolean hasDeadlock() {
-        // 1. 所有事务节点的 stamp 清零
         for (TNode t : transactions.values()) {
             t.setStamp(0);
         }
 
-        // 2. 遍历所有事务节点，作为 DFS 的起点
         for (TNode t : transactions.values()) {
             if (t.getStamp() > 0) continue;
-
             stamp++;
-            if (dfs(t)) {
-                return true;
-            }
+            if (dfs(t)) return true;
         }
         return false;
     }
 
-    /** DFS 沿着“等待边”走，看是否形成环 */
     private boolean dfs(TNode t) {
-        if (t.getStamp() == stamp) {
-            // 在同一轮 DFS 中再次遇到自己，说明有环
-            return true;
-        }
-        if (t.getStamp() > 0 && t.getStamp() < stamp) {
-            // 在旧的一轮 DFS 访问过，旧轮次路径已知无环，故不参与本次DFS
-            return false;
-        }
+        if (t.getStamp() == stamp) return true;
+        if (t.getStamp() > 0 && t.getStamp() < stamp) return false;
 
         t.setStamp(stamp);
 
@@ -196,12 +209,10 @@ public class LockTable {
         return dfs(holder);
     }
 
-    /** 获取或创建 TNode */
     private TNode getOrCreateTNode(long xid) {
         return transactions.computeIfAbsent(xid, k -> new TNode(xid));
     }
 
-    /** 获取或创建 UNode */
     private UNode getOrCreateUNode(long uid) {
         return resources.computeIfAbsent(uid, k -> new UNode(uid));
     }
@@ -213,7 +224,7 @@ public class LockTable {
         final long xid;
         private final List<UNode> holding = new ArrayList<>();
         private UNode waiting;
-        private CountDownLatch latch; // 用于等待/唤醒
+        private CountDownLatch latch; // 用于等待/唤醒（只代表“本次等待边”）
         private int stamp;
 
         TNode(long xid) {
@@ -222,6 +233,10 @@ public class LockTable {
 
         void addHolding(UNode u) {
             holding.add(u);
+        }
+
+        void removeHolding(UNode u) {
+            holding.remove(u);
         }
 
         List<UNode> getHoldingSnapshot() {

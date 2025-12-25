@@ -11,7 +11,7 @@ import com.minisql.backend.utils.ByteUtil;
 /**
  * VM向上层抽象出entry
  * entry结构：
- * [XMIN] [XMAX] [data]
+ * [XMIN] [XMAX] [getData]
  */
 public class Entry {
 
@@ -41,10 +41,10 @@ public class Entry {
 
     /**
      * entry结构：
-     * [XMIN] [XMAX] [data]
+     * [XMIN] [XMAX] [getData]
      */
     public static byte[] wrapEntryRaw(long xid, byte[] data) {
-        byte[] xmin = ByteUtil.long2Byte(xid);
+        byte[] xmin = ByteUtil.longToByte(xid);
         byte[] xmax = new byte[8];
         return Bytes.concat(xmin, xmax, data);
     }
@@ -53,12 +53,12 @@ public class Entry {
         ((VersionManagerImpl)vm).releaseEntry(this);
     }
 
-    public void remove() {
+    public void releaseDataItem() {
         dataItem.release();
     }
 
     // 以拷贝的形式返回内容
-    public byte[] data() {
+    public byte[] getData() {
         dataItem.rLock();
         try {
             SubArray sa = dataItem.data();
@@ -67,6 +67,24 @@ public class Entry {
             return data;
         } finally {
             dataItem.rUnLock();
+        }
+    }
+
+    /**
+     * 覆盖写入数据区（保持 xmin/xmax 不变）。
+     * 仅支持新数据长度与原数据长度一致的场景。
+     */
+    public void setData(byte[] data, long xid) {
+        dataItem.before();
+        try {
+            SubArray sa = dataItem.data();
+            int bodyLen = sa.end - (sa.start + OF_DATA);
+            if(bodyLen != data.length) {
+                throw new IllegalArgumentException("overwrite length mismatch");
+            }
+            System.arraycopy(data, 0, sa.raw, sa.start + OF_DATA, data.length);
+        } finally {
+            dataItem.after(xid);
         }
     }
 
@@ -94,7 +112,7 @@ public class Entry {
         dataItem.before();
         try {
             SubArray sa = dataItem.data();
-            System.arraycopy(ByteUtil.long2Byte(xid), 0, sa.raw, sa.start+OF_XMAX, 8);
+            System.arraycopy(ByteUtil.longToByte(xid), 0, sa.raw, sa.start+OF_XMAX, 8);
         } finally {
             dataItem.after(xid);
         }
@@ -103,4 +121,5 @@ public class Entry {
     public long getUid() {
         return uid;
     }
+
 }

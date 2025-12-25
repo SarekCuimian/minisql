@@ -1,31 +1,28 @@
 package com.minisql.common;
 
 /**
- * TBM 层返回的结构化执行结果，不包含任何格式化后的文本。
+ * TBM 层返回的结构化执行结果
  */
-public class OpResult {
+public class QueryResult {
     private ResultSet resultSet;
     private String message;
     private int affectedRows;
     private int resultRows;
 
-    // 默认构造函数供序列化框架使用
-    public OpResult() {}
-
-    private OpResult(ResultSet resultSet, String message, int affectedRows, int resultRows) {
+    private QueryResult(ResultSet resultSet, String message, int affectedRows, int resultRows) {
         this.resultSet = resultSet;
         this.message = message;
         this.affectedRows = affectedRows;
         this.resultRows = resultRows;
     }
 
-    public static OpResult resultSet(ResultSet data) {
+    public static QueryResult resultSet(ResultSet data) {
         int rows = data == null ? 0 : data.getRows().size();
-        return new OpResult(data, null, -1, rows);
+        return new QueryResult(data, null, -1, rows);
     }
 
-    public static OpResult message(String message, int affectedRows) {
-        return new OpResult(null, message, affectedRows, -1);
+    public static QueryResult message(String message, int affectedRows) {
+        return new QueryResult(null, message, affectedRows, -1);
     }
 
     public ResultSet getResultSet() {

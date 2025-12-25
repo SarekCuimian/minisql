@@ -12,6 +12,7 @@ import com.minisql.backend.common.AbstractCache;
 import com.minisql.backend.dm.page.Page;
 import com.minisql.backend.dm.page.PageImpl;
 import com.minisql.backend.utils.Panic;
+import com.minisql.backend.utils.FileChannelUtil;
 import com.minisql.common.Error;
 
 public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
@@ -19,103 +20,112 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
     private static final int MEM_MIN_LIM = 10;
     public static final String DB_SUFFIX = ".db";
 
-    private RandomAccessFile file;
-    private FileChannel fc;
-    private Lock fileLock;
+    private final RandomAccessFile file;
+    private final FileChannel fc;
+    private final Lock fileLock;
+    private final AtomicInteger pageNumberCounter;
 
-    private AtomicInteger pageNumbers;
-
-    PageCacheImpl(RandomAccessFile file, FileChannel fileChannel, int maxResource) {
-        super(maxResource);
-        if(maxResource < MEM_MIN_LIM) {
-            Panic.panic(Error.MemTooSmallException);
+    PageCacheImpl(RandomAccessFile file, FileChannel fileChannel, int capacity) {
+        super(capacity);
+        if(capacity < MEM_MIN_LIM) {
+            Panic.of(Error.MemTooSmallException);
         }
         long length = 0;
         try {
             length = file.length();
         } catch (IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
         this.file = file;
         this.fc = fileChannel;
         this.fileLock = new ReentrantLock();
-        this.pageNumbers = new AtomicInteger((int)length / PAGE_SIZE);
+        this.pageNumberCounter = new AtomicInteger((int)length / PAGE_SIZE);
     }
 
     public int newPage(byte[] initData) {
-        int pgno = pageNumbers.incrementAndGet();
-        Page pg = new PageImpl(pgno, initData, null);
-        flush(pg);
+        int pgno = pageNumberCounter.incrementAndGet();
+        Page pg = new PageImpl(pgno, initData, this);
+        persist(pg);
         return pgno;
     }
 
     public Page getPage(int pgno) throws Exception {
-        return get((long)pgno);
+        return get(pgno);
+    }
+
+    public void releasePage(Page page) {
+        release(page.getPageNumber());
     }
 
     /**
      * 根据pageNumber从数据库文件中读取页数据，并包裹成Page
      */
     @Override
-    protected Page getForCache(long key) throws Exception {
+    protected Page loadCache(long key) throws Exception {
         int pgno = (int)key;
-        long offset = PageCacheImpl.pageOffset(pgno);
+        long offset = getPageOffset(pgno);
 
         ByteBuffer buf = ByteBuffer.allocate(PAGE_SIZE);
         fileLock.lock();
         try {
-            fc.position(offset);
-            fc.read(buf);
+            FileChannelUtil.readFully(fc, buf, offset);
         } catch(IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
+        } finally {
+            fileLock.unlock();
         }
-        fileLock.unlock();
         return new PageImpl(pgno, buf.array(), this);
     }
 
     @Override
-    protected void releaseForCache(Page pg) {
+    protected void flushCache(Page pg) {
         if(pg.isDirty()) {
-            flush(pg);
+            persist(pg);
             pg.setDirty(false);
         }
     }
 
-    public void release(Page page) {
-        release((long)page.getPageNumber());
+    /**
+     * 持久化 Page
+     */
+    @Override
+    public void persistPage(Page pg) {
+        persist(pg);
     }
 
-    public void flushPage(Page pg) {
-        flush(pg);
-    }
-
-    private void flush(Page pg) {
+    /**
+     * 将 Page 写入文件中
+     */
+    private void persist(Page pg) {
         int pgno = pg.getPageNumber();
-        long offset = pageOffset(pgno);
+        long offset = getPageOffset(pgno);
 
         fileLock.lock();
         try {
             ByteBuffer buf = ByteBuffer.wrap(pg.getData());
-            fc.position(offset);
-            fc.write(buf);
+            FileChannelUtil.writeFully(fc, buf, offset);
             fc.force(false);
         } catch(IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         } finally {
             fileLock.unlock();
         }
     }
 
-    public void truncateByBgno(int maxPgno) {
-        long size = pageOffset(maxPgno + 1);
+    public void truncateByPgno(int maxPgno) {
+        // Must be called only when no page references are held; otherwise later flush can extend file.
+        long size = getPageOffset(maxPgno + 1);
+        fileLock.lock();
         try {
             file.setLength(size);
+            pageNumberCounter.set(maxPgno);
         } catch (IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
+        } finally {
+            fileLock.unlock();
         }
-        pageNumbers.set(maxPgno);
     }
-
+ 
     @Override
     public void close() {
         super.close();
@@ -123,16 +133,17 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
             fc.close();
             file.close();
         } catch (IOException e) {
-            Panic.panic(e);
+            Panic.of(e);
         }
     }
 
-    public int getPageNumber() {
-        return pageNumbers.intValue();
+    public int getPageCount() {
+        return pageNumberCounter.intValue();
     }
 
-    private static long pageOffset(int pgno) {
-        return (pgno-1) * PAGE_SIZE;
+    private long getPageOffset(int pgno) {
+        return (long) (pgno - 1) * PAGE_SIZE;
     }
+
     
 }

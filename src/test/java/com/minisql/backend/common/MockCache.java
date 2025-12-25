@@ -2,16 +2,16 @@ package com.minisql.backend.common;
 
 public class MockCache extends AbstractCache<Long> {
 
-    public MockCache() {
-        super(50);
+    public MockCache(int capacity) {
+        super(capacity);
     }
 
     @Override
-    protected Long getForCache(long key) throws Exception {
+    protected Long loadCache(long key) throws Exception {
         return key;
     }
 
     @Override
-    protected void releaseForCache(Long obj) {}
+    protected void flushCache(Long obj) {}
     
 }

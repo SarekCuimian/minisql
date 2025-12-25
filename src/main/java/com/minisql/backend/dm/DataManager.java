@@ -11,7 +11,7 @@ public interface DataManager {
     long insert(long xid, byte[] data) throws Exception;
     void close();
 
-    public static DataManager create(String path, long mem, TransactionManager txm) {
+    static DataManager create(String path, long mem, TransactionManager txm) {
         PageCache pc = PageCache.create(path, mem);
         Logger lg = Logger.create(path);
 
@@ -20,17 +20,16 @@ public interface DataManager {
         return dm;
     }
 
-    public static DataManager open(String path, long mem, TransactionManager txm) {
+    static DataManager open(String path, long mem, TransactionManager txm) {
         PageCache pc = PageCache.open(path, mem);
         Logger lg = Logger.open(path);
         DataManagerImpl dm = new DataManagerImpl(pc, lg, txm);
-        if(!dm.loadCheckPageOne()) {
+        if(!dm.checkPageOne()) {
             Recover.recover(txm, lg, pc);
         }
-        dm.fillPageIndex();
+        dm.initFreeSpaceMap();
         PageOne.setVcOpen(dm.pageOne);
-        dm.pc.flushPage(dm.pageOne);
-
+        dm.pageCache.persistPage(dm.pageOne);
         return dm;
     }
 }

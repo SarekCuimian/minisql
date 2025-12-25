@@ -1,7 +1,7 @@
 package com.minisql.api.session;
 
 import com.minisql.common.ExecResult;
-import com.minisql.common.ExecResultCodec;
+import com.minisql.common.ExecResultEncoder;
 import com.minisql.transport.Encoder;
 import com.minisql.transport.Packager;
 import com.minisql.transport.Transporter;
@@ -38,11 +38,12 @@ public class MiniSqlSessionImpl implements MiniSqlSession {
         synchronized (ioLock) {
             Package req = new Package(statement.getBytes(StandardCharsets.UTF_8), null);
             packager.send(req);
-            Package resp = packager.receive(); 
-            if (resp.getExc() != null) {
-                throw resp.getExc();
+            Package respkg = packager.receive(); 
+            if (respkg.getExc() != null) {
+                throw respkg.getExc();
             }
-            return ExecResultCodec.decode(resp.getData());
+            // 传输解包（去掉状态位）后，用结果序列化层恢复 ExecResult
+            return ExecResultEncoder.decode(respkg.getData());
         }
     }
 
