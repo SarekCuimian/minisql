@@ -53,5 +53,10 @@ public class MockDataManager implements DataManager {
 
     @Override
     public void close() {}
-    
+
+    @Override
+    public void flushLog(long lsn) {
+
+    }
+
 }

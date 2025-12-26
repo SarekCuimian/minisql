@@ -21,21 +21,24 @@ import com.minisql.common.Error;
  *
  * 文件格式：
  * Header(32B):
- *   MAGIC(4) VERSION(4) HDR_CRC(4) CHECKPOINT_LSN(8) FLUSHED_LSN(8) RESERVED(4)
+ *   MAGIC(4) VERSION(4)
+ *   HDR_CRC(4) CHECKPOINT_LSN(8) FLUSHED_LSN(8)
+ *   RESERVED(4)
  * Record:
- *   payloadLen(4) recordCRC(4) lsn(8) payload(payloadLen)
+ *   payloadSize(4) recordCRC(4) lsn(8) payload(payloadSize)
  *
- * LSN = record 在文件中的起始偏移（byte offset）
+ * LSN = record 在文件中的结束偏移（byte offset）
  */
 public class LogManagerImpl implements LogManager {
 
     private static final int MAGIC = 0x524C4F47; // "RLOG"
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
 
     private static final int HEADER_SIZE = 32;
     private static final int RECORD_HEADER_SIZE = 16;
 
-    private static final int DEFAULT_BUFFER_SIZE = 4 << 20; // 4MB log buffer
+    private static final int DEFAULT_LOG_BUFFER_SIZE = 4 << 20; // 4MB log buffer
+    private static final int WRITE_AHEAD_BUFFER_SIZE = 8 * 1024; // 8KB writer buffer
     private static final long FLUSH_INTERVAL_MS = 100L;     // flusher 最多睡 100ms
 
     public static final String LOG_SUFFIX = ".log";
@@ -46,61 +49,47 @@ public class LogManagerImpl implements LogManager {
 
     private final ReentrantLock lock = new ReentrantLock();
 
-    /**
-     * notFull：append 线程等“buffer 有空位”。
-     * - await：append 在 buffer 空间不足时等待
-     * - signal：writer 清空/写走 buffer 后唤醒 append
-     */
+    /** buffer 有空位 */
     private final Condition notFull = lock.newCondition();
 
-    /**
-     * notEmpty：writer 线程等“buffer 有数据可写”。
-     * - await：writer 在 buffer 为空时等待
-     * - signal：append 写入 buffer 后唤醒 writer；flush 也会唤醒 writer（加速）
-     */
+    /** buffer 有数据 */
     private final Condition notEmpty = lock.newCondition();
 
-    /**
-     * written：flusher 线程等“writtenLsn 推进（新数据已 write 到文件）”。
-     * - await：flusher 等 writer 写出新数据（或等 flushRequiredLsn 满足）
-     * - signal：writer 写完文件后唤醒 flusher；flush/setCheckpoint 也会唤醒 flusher（加速检查）
-     */
+    /** writer 已将数据写到文件通道，唤醒 flusher 刷盘 */
     private final Condition written = lock.newCondition();
 
-    /**
-     * flushed：flush(lsn) 的调用线程等“flushedLsn >= lsn（已经 durable）”。
-     * - await：flush 调用线程等待 durable
-     * - signal：flusher force 完成并推进 flushedLsn 后唤醒
-     */
+    /** flusher 已经执行 force 完成刷盘，提示 flush 动作可以结束 */
     private final Condition flushed = lock.newCondition();
 
-    private final ByteBuffer logBuffer;
+    /** 日志缓冲区（环形） */
+    private final RingBuffer ringBuffer;
 
+    /** 内存可见运行标志 */
     private volatile boolean running;
 
-    // nextLsn：下一条 record 的起始偏移（逻辑分配）
-    private long nextLsn;
+    /** 下一条 record 的起始偏移（逻辑分配）*/
+    private long currentLsn;
 
-    // writeOffset：writer 下一次写文件的偏移（文件尾）
-    private long writeOffset;
-
-    // writtenLsn：已经 write 到文件完成的边界（可能还没 force）
+    /** writer 已写文件边界，还并未刷盘 */ 
     private long writtenLsn;
 
-    // flushedLsn：已经 force 到磁盘的边界（durable）
+    /** 日志持久化边界：小于这个 LSN 的日志已经落盘到日志文件 */
     private long flushedLsn;
 
-    // checkpointLsn：写入 header 的 checkpoint（恢复起点）。这里只负责持久化值，真正刷页由外部保证
+    /** 数据页持久化边界：小于这个 LSN 的修改已经落盘到数据文件，崩溃恢复只需从此 LSN 开始 REDO */
     private long checkpointLsn;
 
-    // flushRequiredLsn：合并并发提交的刷盘目标lsn，取并发commit的最大lsn，避免重复刷盘
-    private long flushRequiredLsn;
+    /** 刷盘最低要求 LSN：合并并发提交的刷盘目标 LSN，取并发 commit 中最大 LSN，避免重复刷盘 */
+    private long flushTargetLsn;
 
+    /** log writer 线程 */
     private Thread writer;
+
+    /** log flusher 线程 */
     private Thread flusher;
 
     public static LogManagerImpl create(String path) {
-        return create(path, DEFAULT_BUFFER_SIZE);
+        return create(path, DEFAULT_LOG_BUFFER_SIZE);
     }
 
     public static LogManagerImpl create(String path, int bufferSize) {
@@ -125,14 +114,14 @@ public class LogManagerImpl implements LogManager {
             Panic.of(e);
         }
 
-        LogManagerImpl lm = new LogManagerImpl(f, raf, fc, bufferSize);
-        lm.initNewFile();
-        lm.startBackgroundThreads();
-        return lm;
+        LogManagerImpl lgm = new LogManagerImpl(f, raf, fc, bufferSize);
+        lgm.initLogFile();
+        lgm.startWorkerThreads();
+        return lgm;
     }
 
     public static LogManagerImpl open(String path) {
-        return open(path, DEFAULT_BUFFER_SIZE);
+        return open(path, DEFAULT_LOG_BUFFER_SIZE);
     }
 
     public static LogManagerImpl open(String path, int bufferSize) {
@@ -153,58 +142,55 @@ public class LogManagerImpl implements LogManager {
             Panic.of(e);
         }
 
-        LogManagerImpl lm = new LogManagerImpl(f, raf, fc, bufferSize);
-        lm.loadHeader();
-        lm.trimTail();
-        lm.startBackgroundThreads();
-        return lm;
+        LogManagerImpl lgm = new LogManagerImpl(f, raf, fc, bufferSize);
+        lgm.loadHeader();
+        lgm.trimBadTail();
+        lgm.startWorkerThreads();
+        return lgm;
     }
 
     private LogManagerImpl(File logFile, RandomAccessFile raf, FileChannel channel, int bufferSize) {
         this.logFile = logFile;
         this.raf = raf;
         this.channel = channel;
-        this.logBuffer = ByteBuffer.allocate(Math.max(64, bufferSize));
+        this.ringBuffer = new RingBuffer(Math.max(64, bufferSize));
     }
 
     /**
-     * 追加一条日志到内存 buffer，返回该记录的 LSN（文件起始 offset）。
-     * 注意：这里只保证“分配了 LSN 并写入 buffer”，不保证 durable。
+     * 追加一条日志到内存 buffer，返回该记录的 end LSN
      */
     @Override
-    public long append(byte[] payload) {
+    public long log(byte[] payload) {
         if (payload == null) {
             throw new IllegalArgumentException("payload is null");
         }
-
+        // 记录长度 = 记录头长度 + 负载长度
         int recordSize = RECORD_HEADER_SIZE + payload.length;
-        if (recordSize > logBuffer.capacity()) {
+        if (recordSize > ringBuffer.capacity()) {
             // 简化实现：不支持超大 record（生产级可做 bypass buffer 直接写文件）
             throw new IllegalArgumentException("record too large: " + recordSize);
         }
 
         lock.lock();
         try {
-            while (recordSize > logBuffer.remaining()) {
-                // buffer 不够：先唤醒 writer 尽快写走 buffer，释放空间
-                // （如果 writer 正在 notEmpty.await() 睡着，这里能把它叫醒）
+            while (!ringBuffer.hasSpace(writtenLsn, currentLsn, recordSize)) {
+                // buffer 不够，先唤醒 writer 尽快写走 buffer，释放空间
                 notEmpty.signal();
-
-                // append 线程等待：直到 writer 清空 buffer 后 signal notFull
+                // append 线程等待 writer 清理 buffer 后再次发出 notFull 条件信号
                 notFull.await();
             }
-
-            // 分配 LSN（LSN=record 起始 offset）
-            long lsn = nextLsn;
-            nextLsn += recordSize;
+            // 计算本条记录的 LSN，即下一条记录的起始偏移
+            long start = currentLsn;
+            long lsn = start + recordSize;
+            currentLsn = lsn;
 
             // 封装 record 并写入 buffer
             byte[] record = wrapRecord(lsn, payload);
-            logBuffer.put(record);
+            ringBuffer.write(start, record);
 
-            // 写入后唤醒 writer：buffer 里有数据了，可以写文件
+            // 写入后唤醒 writer，buffer 里有数据了，可以写文件
             notEmpty.signal();
-
+            
             return lsn;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -228,21 +214,15 @@ public class LogManagerImpl implements LogManager {
                 // 已经 durable 到目标 lsn，直接返回
                 return;
             }
-
             // 记录“至少要 flush 到哪里”的需求（多线程合并）
-            flushRequiredLsn = Math.max(flushRequiredLsn, lsn);
-
-            // 唤醒 writer：如果 writer 因 buffer 为空在 notEmpty.await() 睡着，叫醒它写出已有日志
-            // （buffer 为空也没关系，writer 醒来会继续 await）
-            notEmpty.signal();
-
-            // 唤醒 flusher：如果 flusher 在 written.await(timeout) 睡着，叫醒它尽快检查是否需要 force
-            // 这不是“已经 written”的意思，只是“快醒来看看是否该 force”
+            flushTargetLsn = Math.max(flushTargetLsn, lsn);
+            // 提醒 writer 拿缓冲区元素写文件
+            notEmpty.signal(); 
+            // 提醒 flusher 将文件刷到磁盘
             written.signal();
-
             // 等待 flusher 推进 flushedLsn
             while (flushedLsn < lsn) {
-                // 等 flusher force 完后 signalAll(flushed)
+                // 等 flusher force，即刷到磁盘后，继续执行
                 flushed.await();
             }
         } catch (InterruptedException e) {
@@ -303,22 +283,21 @@ public class LogManagerImpl implements LogManager {
     }
 
     @Override
-    public LogManager.LogReader openReader() {
+    public LogManager.LogReader getReader() {
         return new LogReader(logFile);
     }
 
     @Override
     public void close() {
-        // 先强制把已分配的所有 LSN durable（flush 是阻塞的）
-        flush(nextLsn);
-
+        // 保证 LSN <= currentLsn 的日志都落盘
+        flush(currentLsn);
         // 停止后台线程
         running = false;
 
         lock.lock();
         try {
             // 关闭时唤醒所有可能在 await 的线程，防止卡死
-            notFull.signalAll(); // append 可能在等空间
+            notFull.signalAll();   // append 可能在等空间
             notEmpty.signalAll();  // writer 可能在等数据
             written.signalAll();   // flusher 可能在等 written 事件
             flushed.signalAll();   // flush 调用者可能在等 durable
@@ -326,8 +305,7 @@ public class LogManagerImpl implements LogManager {
             lock.unlock();
         }
 
-        joinThread(writer);
-        joinThread(flusher);
+        awaitWorkerThreads();
 
         try {
             channel.close();
@@ -337,7 +315,7 @@ public class LogManagerImpl implements LogManager {
         }
     }
 
-    private void startBackgroundThreads() {
+    private void startWorkerThreads() {
         running = true;
         writer = new Thread(new LogWriter(), "LogWriter");
         flusher = new Thread(new LogFlusher(), "LogFlusher");
@@ -345,38 +323,49 @@ public class LogManagerImpl implements LogManager {
         flusher.start();
     }
 
+    private void awaitWorkerThreads() {
+        try {
+            writer.join();
+            flusher.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     /**
-     * writer：把 logBuffer 中的数据写入文件（write），推进 writtenLsn
+     * writer：把 ringBuffer 中的数据写入文件（write），推进 writtenLsn
      */
     private final class LogWriter implements Runnable {
+        
+        private final ByteBuffer writeAheadBuffer = ByteBuffer.allocate(WRITE_AHEAD_BUFFER_SIZE);
+
         @Override
         public void run() {
             while (running) {
-                byte[] chunk;
+                // 从环形缓冲区读出到 chunk 暂存
                 long offset;
+                int len;
 
                 lock.lock();
                 try {
-                    while (running && logBuffer.position() == 0) {
+                    while (running && currentLsn == writtenLsn) {
                         // buffer 为空：writer 等待 append/flush signal(notEmpty)
                         notEmpty.await();
                     }
-                    if (!running && logBuffer.position() == 0) {
+                    if (!running && currentLsn == writtenLsn) {
                         return;
                     }
 
-                    // 拷贝 buffer 当前内容到 chunk（释放锁后做 IO）
-                    int len = logBuffer.position();
-                    chunk = new byte[len];
-                    logBuffer.flip();
-                    logBuffer.get(chunk);
-                    logBuffer.clear();
+                    // 拷贝 ringBuffer 中未写入的数据（释放锁后做 IO）
+                    long available = currentLsn - writtenLsn;
+                    len = (int) Math.min(available, writeAheadBuffer.capacity());
+                    // 每次从 log buffer 读取先清理 write ahead buffer
+                    writeAheadBuffer.clear();
+                    ringBuffer.read(writtenLsn, len, writeAheadBuffer);
+                    writeAheadBuffer.flip();
 
-                    // 文件写入偏移
-                    offset = writeOffset;
-
-                    // buffer 已清空：唤醒所有在 notFull.await() 的 append 线程继续写入
-                    notFull.signalAll();
+                    // 文件写入偏移（文件尾）
+                    offset = writtenLsn;
 
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -387,7 +376,8 @@ public class LogManagerImpl implements LogManager {
 
                 // 不持锁做 IO
                 try {
-                    FileChannelUtil.writeFully(channel, ByteBuffer.wrap(chunk), offset);
+                    // 把写前缓冲区的内容写入文件通道
+                    FileChannelUtil.writeFully(channel, writeAheadBuffer, offset);
                 } catch (IOException e) {
                     Panic.of(e);
                 }
@@ -395,9 +385,9 @@ public class LogManagerImpl implements LogManager {
                 lock.lock();
                 try {
                     // 推进 written 边界（注意：此时可能还没 force）
-                    writeOffset += chunk.length;
-                    writtenLsn = writeOffset;
-
+                    writtenLsn += len;
+                    // buffer 空间已释放：唤醒等待空间的 append
+                    notFull.signalAll();
                     // 通知 flusher：有新数据已写到文件，可以检查是否需要 force
                     written.signalAll();
                 } finally {
@@ -419,23 +409,21 @@ public class LogManagerImpl implements LogManager {
 
                 lock.lock();
                 try {
+                    // writtenLsn <= flushedLsn
+                    // 没有新日志写到文件里，没东西可刷，继续等
+                    // flushTargetLsn > 0 && writtenLsn < flushTargetLsn
+                    // 有事务要求刷到某个 LSN，但 writer 还没把日志写到那里，刷也没意义，继续等
                     while (running && (writtenLsn <= flushedLsn
-                            || (flushRequiredLsn > 0 && writtenLsn < flushRequiredLsn))) {
-                        // flusher 等待两类条件：
-                        // 1) writer 写出了新数据：writtenLsn > flushedLsn
-                        // 2) 外部要求 flushRequiredLsn，但 writer 还没写到那么远：writtenLsn < flushRequiredLsn
-                        //
-                        // await(timeout)：既能被 signal 提前唤醒，也能定时醒来降低延迟
+                                    || (flushTargetLsn > 0 && writtenLsn < flushTargetLsn))) {
+                        // await(timeout) 即便没被 signal，也会周期性醒来做一次检查
                         written.await(FLUSH_INTERVAL_MS, TimeUnit.MILLISECONDS);
                     }
+                    // 运行标志为 false 时，提前返回，停止运行
                     if (!running) return;
+                    // 如果醒来后发现还是没有新内容，就继续 run 循环
+                    if (writtenLsn <= flushedLsn) continue;
 
-                    if (writtenLsn <= flushedLsn) {
-                        // 没有需要 force 的内容
-                        continue;
-                    }
-
-                    // 本轮 force 到当前 writtenLsn（可能会超过 flushRequiredLsn，允许）
+                    // 本轮 flush 的目标是当前 writtenLsn
                     target = writtenLsn;
                     checkpoint = Math.min(checkpointLsn, target);
 
@@ -449,6 +437,7 @@ public class LogManagerImpl implements LogManager {
                 // 不持锁做 IO：写 header + force
                 try {
                     writeHeader(checkpoint, target);
+                    // 将 FileChannel 中数据最终刷入磁盘
                     channel.force(false);
                 } catch (IOException e) {
                     Panic.of(e);
@@ -462,8 +451,8 @@ public class LogManagerImpl implements LogManager {
                     }
 
                     // 如果满足了外部强制 flush 请求，则清掉需求
-                    if (flushRequiredLsn > 0 && flushedLsn >= flushRequiredLsn) {
-                        flushRequiredLsn = 0;
+                    if (flushTargetLsn > 0 && flushedLsn >= flushTargetLsn) {
+                        flushTargetLsn = 0;
                     }
 
                     // 唤醒所有等待 flush(lsn) 的线程：flushedLsn 更新了
@@ -475,14 +464,17 @@ public class LogManagerImpl implements LogManager {
         }
     }
 
-    private void initNewFile() {
+    /**
+     * 初始化 log 文件，写入 header 各字段初始值
+     */
+    private void initLogFile() {
+        // header 中存储的字段
         checkpointLsn = HEADER_SIZE;
         flushedLsn = HEADER_SIZE;
-        writeOffset = HEADER_SIZE;
+        // 内存中存储的字段
+        currentLsn = HEADER_SIZE;
         writtenLsn = HEADER_SIZE;
-        nextLsn = HEADER_SIZE;
-        flushRequiredLsn = 0;
-
+        flushTargetLsn = 0;
         try {
             writeHeader(checkpointLsn, flushedLsn);
             channel.force(false);
@@ -509,36 +501,37 @@ public class LogManagerImpl implements LogManager {
         } catch (IOException e) {
             Panic.of(e);
         }
+        // limit = HEADER_SIZE, position = 0, 进入读模式
         buf.flip();
 
         int magic = buf.getInt();
         int version = buf.getInt();
         int checksum = buf.getInt();
-        long ckpt = buf.getLong();
+        long checkpoint = buf.getLong();
         long flushed = buf.getLong();
         buf.getInt(); // reserved
 
+        // 检查 header
         if (magic != MAGIC || version != VERSION) {
             Panic.of(Error.BadLogFileException);
         }
-        if (checksum != calcHeaderChecksum(ckpt, flushed)) {
+        if (checksum != calcHeaderChecksum(checkpoint, flushed)) {
             Panic.of(Error.BadLogFileException);
         }
 
-        checkpointLsn = ckpt;
-        flushedLsn = flushed;
+        this.checkpointLsn = checkpoint;
+        this.flushedLsn = flushed;
 
-        // 先假设文件尾都在（后续 trimTail 会截断坏尾巴并修正）
-        writeOffset = size;
+        // 先假设文件尾都在，后续 trimBadTail 会截断文件坏尾并修正
+        currentLsn = size;
         writtenLsn = size;
-        nextLsn = size;
-        flushRequiredLsn = 0;
+        flushTargetLsn = 0;
     }
 
     /**
      * 启动时扫 record，遇到坏尾巴就 truncate
      */
-    private void trimTail() {
+    private void trimBadTail() {
         long size;
         try {
             size = raf.length();
@@ -563,13 +556,14 @@ public class LogManagerImpl implements LogManager {
 
             int payloadLen = header.getInt();
             int checksum = header.getInt();
-            long lsn = header.getLong();
+            long endLsn = header.getLong();
+            long recordEnd = pos + RECORD_HEADER_SIZE + payloadLen;
 
-            // lsn 必须等于 record 起始位置（防止错位）
-            if (payloadLen < 0 || lsn != pos) {
+            // lsn 必须等于 record 结束位置（防止错位）
+            if (payloadLen < 0 || endLsn != recordEnd) {
                 break;
             }
-            if (pos + RECORD_HEADER_SIZE + payloadLen > size) {
+            if (recordEnd > size) {
                 break;
             }
 
@@ -582,13 +576,13 @@ public class LogManagerImpl implements LogManager {
             }
 
             byte[] payload = data.array();
-            int calc = calcRecordChecksum(lsn, payload);
+            int calc = calcRecordChecksum(endLsn, payload);
             if (calc != checksum) {
                 break;
             }
 
-            pos += RECORD_HEADER_SIZE + payloadLen;
-            lastValid = pos;
+            pos = recordEnd;
+            lastValid = recordEnd;
         }
 
         if (lastValid < size) {
@@ -599,9 +593,8 @@ public class LogManagerImpl implements LogManager {
             }
         }
 
-        writeOffset = lastValid;
+        currentLsn = lastValid;
         writtenLsn = lastValid;
-        nextLsn = lastValid;
 
         // durable 边界不能超过有效尾部
         flushedLsn = Math.min(flushedLsn, lastValid);
@@ -633,10 +626,10 @@ public class LogManagerImpl implements LogManager {
 
     private static int calcHeaderChecksum(long checkpoint, long flushed) {
         CRC32C crc = new CRC32C();
-        byte[] ckpt = ByteUtil.longToByte(checkpoint);
-        byte[] fl = ByteUtil.longToByte(flushed);
-        crc.update(ckpt, 0, ckpt.length);
-        crc.update(fl, 0, fl.length);
+        byte[] check = ByteUtil.longToByte(checkpoint);
+        byte[] flush = ByteUtil.longToByte(flushed);
+        crc.update(check, 0, check.length);
+        crc.update(flush, 0, flush.length);
         return (int) crc.getValue();
     }
 
@@ -648,18 +641,9 @@ public class LogManagerImpl implements LogManager {
         return (int) crc.getValue();
     }
 
-    private static void joinThread(Thread t) {
-        if (t == null) return;
-        try {
-            t.join();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
 
     /**
-     * 只读 reader（主要用于启动恢复）。默认 fileSize 固定为打开时长度。
-     * 如果你想在线读增长的日志，把 fileSize 改成每次 next() 前 raf.length() 刷新即可。
+     * 只读 reader，用于启动恢复，默认 fileSize 固定为打开时长度
      */
     private static final class LogReader implements LogManager.LogReader {
         private final RandomAccessFile raf;
@@ -692,15 +676,18 @@ public class LogManagerImpl implements LogManager {
             }
             header.flip();
 
-            int payloadLen = header.getInt();
+            int payloadSize = header.getInt();
             int checksum = header.getInt();
-            long lsn = header.getLong();
+            long endLsn = header.getLong();
+            long recordEnd = position + RECORD_HEADER_SIZE + payloadSize;
 
-            if (payloadLen < 0 || lsn != position || position + RECORD_HEADER_SIZE + payloadLen > fileSize) {
+            if (payloadSize < 0
+                || endLsn != recordEnd
+                || recordEnd > fileSize) {
                 return null;
             }
 
-            ByteBuffer data = ByteBuffer.allocate(payloadLen);
+            ByteBuffer data = ByteBuffer.allocate(payloadSize);
             try {
                 FileChannelUtil.readFully(channel, data, position + RECORD_HEADER_SIZE);
             } catch (IOException e) {
@@ -708,12 +695,12 @@ public class LogManagerImpl implements LogManager {
             }
 
             byte[] payload = data.array();
-            int calc = calcRecordChecksum(lsn, payload);
+            int calc = calcRecordChecksum(endLsn, payload);
             if (calc != checksum) {
                 return null;
             }
 
-            position += RECORD_HEADER_SIZE + payloadLen;
+            position = recordEnd;
             return payload;
         }
 

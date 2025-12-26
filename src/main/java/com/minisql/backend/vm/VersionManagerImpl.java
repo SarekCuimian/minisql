@@ -99,11 +99,11 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
 
         try {
             // 先拿锁（必要时等待），避免等待期间版本变化导致删除基于过期可见性
-            lockRecord(tx, uid);
+            lockRow(tx, uid);
 
             if(!Visibility.isVisible(txm, tx, entry)) {
                 // 已不可见，释放该行锁，避免无意义占用
-                unlockRecord(tx, uid);
+                unlockRow(tx, uid);
                 return false;
             }
             // 从这里往下，说明当前 xid 已经拿到了 uid 的"删除权"
@@ -167,11 +167,11 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
 
         try {
             // 先拿锁（必要时等待），再判断可见性，避免等待期间版本变化导致读取过期版本
-            lockRecord(tx, uid);
+            lockRow(tx, uid);
 
             if(!Visibility.isVisible(txm, tx, entry)) {
                 // 已不可见，释放该行锁，避免无意义占用
-                unlockRecord(tx, uid);
+                unlockRow(tx, uid);
                 return null;
             }
 
@@ -217,6 +217,8 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
             lock.unlock();
         }
         lockManager.clear(xid);
+        long lsn = txm.getLastLsn(xid);
+        dm.flushLog(lsn);
         txm.commit(xid);
     }
 
@@ -262,9 +264,9 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     }
     
     /**
-     * 获取记录锁
+     * 获取行锁
      */
-    private void lockRecord(Transaction tx, long uid) throws Exception {
+    private void lockRow(Transaction tx, long uid) throws Exception {
         CountDownLatch latch = null;
         long xid = tx.xid;
         try {
@@ -298,9 +300,9 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     }
 
     /**
-     * 释放记录锁
+     * 释放行锁
      */
-    private void unlockRecord(Transaction tx, long uid) {
+    private void unlockRow(Transaction tx, long uid) {
         lockManager.release(tx.xid, uid);
     }
 

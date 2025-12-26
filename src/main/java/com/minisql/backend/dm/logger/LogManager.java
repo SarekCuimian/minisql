@@ -1,7 +1,7 @@
 package com.minisql.backend.dm.logger;
 
 public interface LogManager extends AutoCloseable {
-    long append(byte[] payload);
+    long log(byte[] payload);
 
     void flush(long lsn);
 
@@ -13,7 +13,7 @@ public interface LogManager extends AutoCloseable {
 
     void setCheckpointLsn(long lsn);
 
-    LogReader openReader();
+    LogReader getReader();
 
     @Override
     void close();

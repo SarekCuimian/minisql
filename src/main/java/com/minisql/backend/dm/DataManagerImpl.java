@@ -3,7 +3,7 @@ package com.minisql.backend.dm;
 import com.minisql.backend.common.AbstractCache;
 import com.minisql.backend.dm.dataitem.DataItem;
 import com.minisql.backend.dm.dataitem.DataItemImpl;
-import com.minisql.backend.dm.logger.Logger;
+import com.minisql.backend.dm.logger.LogManager;
 import com.minisql.backend.dm.page.Page;
 import com.minisql.backend.dm.page.PageOne;
 import com.minisql.backend.dm.page.PageX;
@@ -19,14 +19,14 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
 
     TransactionManager txm;
     PageCache pageCache;
-    Logger logger;
+    LogManager logManager;
     FreeSpaceMap fsm;
     Page pageOne;
 
-    public DataManagerImpl(PageCache pageCache, Logger logger, TransactionManager txm) {
+    public DataManagerImpl(PageCache pageCache, LogManager logManager, TransactionManager txm) {
         super(0);
         this.pageCache = pageCache;
-        this.logger = logger;
+        this.logManager = logManager;
         this.txm = txm;
         this.fsm = new FreeSpaceMap();
     }
@@ -68,11 +68,16 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
         try {
             pg = pageCache.getPage(freeSpace.pgno);
             // 把一次更新操作序列化成 WAL payload
-            byte[] log = Recover.insertLog(xid, pg, raw);
-            // 把 payload 包入 [Size][Checksum][Data] 并顺序写入 .log 文件
-            logger.log(log);
+            byte[] payload = Recover.insertLog(xid, pg, raw);
+            // 写入日志缓冲区，并返回该条日志的 LSN
+            long lsn = logManager.log(payload);
+            // 更新当前事务的最新 LSN
+            txm.updateLastLsn(xid, lsn);
 
             short offset = PageX.insert(pg, raw);
+            // 内存页更新后，更新当前页的 LSN
+            pg.setPageLsn(lsn);
+
             return UidUtil.addressToUid(freeSpace.pgno, offset);
 
         } finally {
@@ -89,7 +94,7 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
     @Override
     public void close() {
         super.close();
-        logger.close();
+        logManager.close();
         PageOne.setVcClose(pageOne);
         pageOne.release();
         pageCache.close();
@@ -98,7 +103,14 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
     // 为xid生成update日志
     public void logDataItem(long xid, DataItem di) {
         byte[] log = Recover.updateLog(xid, di);
-        logger.log(log);
+        long lsn = logManager.log(log);
+        txm.updateLastLsn(xid, lsn);
+    }
+
+    @Override
+    public void flushLog(long lsn) {
+        if (lsn <= 0) return;
+        logManager.flush(lsn);
     }
 
     public void releaseDataItem(DataItem di) {
