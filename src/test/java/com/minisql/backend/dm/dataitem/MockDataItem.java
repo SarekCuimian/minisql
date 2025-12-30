@@ -52,12 +52,12 @@ public class MockDataItem implements DataItem {
     public void release() {}
 
     @Override
-    public void lock() {
+    public void wLock() {
         wLock.lock();
     }
 
     @Override
-    public void unlock() {
+    public void wUnlock() {
         wLock.unlock();
     }
 
@@ -72,7 +72,7 @@ public class MockDataItem implements DataItem {
     }
 
     @Override
-    public Page page() {
+    public Page getPage() {
         return null;
     }
 

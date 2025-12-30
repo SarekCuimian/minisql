@@ -5,33 +5,33 @@ import java.nio.ByteBuffer;
 /**
  * 环形日志缓冲区
  */
-final class RingBuffer {
+public final class RingBuffer {
 
     private final byte[] buf;
     private final int capacity;
 
-    RingBuffer(int capacity) {
+    public RingBuffer(int capacity) {
         this.capacity = capacity;
         this.buf = new byte[capacity];
     }
 
-    int capacity() {
+    public int capacity() {
         return capacity;
     }
 
-    boolean hasSpace(long writtenLsn, long currentLsn, int len) {
+    public boolean hasSpace(long writtenLsn, long currentLsn, int len) {
         return (currentLsn - writtenLsn + len) <= capacity;
     }
 
     /**
      * 写日志缓冲区
      *
-     * @param startLsn 写入的起始位置
+     * @param start 写入的起始位置
      * @param src 待写入的日志
      */
-    void write(long startLsn, byte[] src) {
+    public void write(long start, byte[] src) {
         int len = src.length;
-        int pos = (int) (startLsn % capacity);
+        int pos = (int) (start % capacity);
 
         if (pos + len <= capacity) {
             System.arraycopy(src, 0, buf, pos, len);
@@ -45,12 +45,12 @@ final class RingBuffer {
     /**
      * 读日志缓冲区
      *
-     * @param startLsn 读取的起始位置
+     * @param start 读取的起始位置
      * @param len 读取的长度
      * @param dst 存放读取结果
      */
-    void read(long startLsn, int len, ByteBuffer dst) {
-        int pos = (int) (startLsn % capacity);
+    public void read(long start, int len, ByteBuffer dst) {
+        int pos = (int) (start % capacity);
 
         if (pos + len <= capacity) {
             dst.put(buf, pos, len);

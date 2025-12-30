@@ -1,7 +1,11 @@
 package com.minisql.backend.dm.logger;
 
 public interface LogManager extends AutoCloseable {
-    long log(byte[] payload);
+
+    int POS_START = 0;
+    int POS_END = 1;
+    
+    long[] log(byte[] payload);
 
     void flush(long lsn);
 

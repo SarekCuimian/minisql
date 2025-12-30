@@ -18,12 +18,12 @@ public interface DataItem {
     void rollback();
     void release();
 
-    void lock();
-    void unlock();
+    void wLock();
+    void wUnlock();
     void rLock();
     void rUnLock();
 
-    Page page();
+    Page getPage();
     long getUid();
     byte[] getOldRaw();
     SubArray getRaw();
@@ -36,10 +36,10 @@ public interface DataItem {
 
     // 从页面的offset处解析处dataItem
     static DataItem parseDataItem(Page pg, short offset, DataManagerImpl dm) {
-        byte[] raw = pg.getData();
+        byte[] raw = pg.getBytes();
         short size = ByteUtil.parseShort(Arrays.copyOfRange(raw, offset+DataItemImpl.OF_SIZE, offset+DataItemImpl.OF_DATA));
         short length = (short)(size + DataItemImpl.OF_DATA);
-        long uid = UidUtil.addressToUid(pg.getPageNumber(), offset);
+        long uid = UidUtil.getUid(pg.getPageNumber(), offset);
         return new DataItemImpl(new SubArray(raw, offset, offset+length), new byte[length], pg, uid, dm);
     }
 

@@ -11,7 +11,7 @@ import com.minisql.backend.utils.ByteUtil;
 /**
  * VM向上层抽象出entry
  * entry结构：
- * [XMIN] [XMAX] [getData]
+ * [XMIN] [XMAX] [getBytes]
  */
 public class Entry {
 
@@ -41,7 +41,7 @@ public class Entry {
 
     /**
      * entry结构：
-     * [XMIN] [XMAX] [getData]
+     * [XMIN] [XMAX] [getBytes]
      */
     public static byte[] wrapEntryRaw(long xid, byte[] data) {
         byte[] xmin = ByteUtil.longToByte(xid);

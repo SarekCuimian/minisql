@@ -228,6 +228,21 @@ public abstract class AbstractCache<T> {
     }
 
     /**
+     * 获取缓存中指定 key 的对象，不改变 LRU 顺序
+     */
+    protected T lookup(long key) {
+        lruLock.lock();
+        try {
+            Resource<T> r = index.get(key); // 不触发 LRU 访问
+            if (r == null) return null;
+            r.refCount.incrementAndGet();   // 防止并发淘汰
+            return r.value;
+        } finally {
+            lruLock.unlock();
+        }
+    }
+
+    /**
      * 关闭缓存：写回并清空
      * 同时让所有 pending 的 future 结束，避免等待线程卡死
      */
@@ -252,6 +267,13 @@ public abstract class AbstractCache<T> {
     }
 
     /**
+     * 是否允许淘汰该对象（默认允许，子类可覆盖）
+     */
+    protected boolean isEvictable(T obj) {
+        return true;
+    }
+
+    /**
      * LRU 淘汰：淘汰最旧且 ref=0 的条目，返回被驱逐的对象供锁外 flush。
      * 注意：必须在持有 lruLock 的情况下调用
      */
@@ -261,6 +283,10 @@ public abstract class AbstractCache<T> {
             Map.Entry<Long, Resource<T>> entry = it.next();
             long key = entry.getKey();
             Resource<T> r = entry.getValue();
+
+            if (!isEvictable(r.value)) {
+                continue;
+            }
 
             if (r.refCount.get() == 0) {
                 // 先从 LRU 结构移除

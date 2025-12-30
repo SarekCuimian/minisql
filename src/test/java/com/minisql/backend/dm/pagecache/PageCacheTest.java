@@ -13,6 +13,7 @@ import com.minisql.backend.dm.page.cache.PageCache;
 import org.junit.Test;
 
 import com.minisql.backend.dm.page.Page;
+import com.minisql.backend.dm.logger.LogManager;
 import com.minisql.backend.utils.Panic;
 import com.minisql.backend.utils.RandomUtil;
 
@@ -22,7 +23,9 @@ public class PageCacheTest {
     
     @Test
     public void testPageCache() throws Exception {
+        LogManager lgm = LogManager.create("/tmp/pcacher_simple_test0");
         PageCache pc = PageCache.create("/tmp/pcacher_simple_test0", PageCache.PAGE_SIZE * 50);
+        pc.setLogManager(lgm);
         for(int i = 0 ; i < 100; i ++) {
             byte[] tmp = new byte[PageCache.PAGE_SIZE];
             tmp[0] = (byte)i;
@@ -32,16 +35,21 @@ public class PageCacheTest {
             pg.release();
         }
         pc.close();
+        lgm.close();
 
+        lgm = LogManager.open("/tmp/pcacher_simple_test0");
         pc = PageCache.open("/tmp/pcacher_simple_test0", PageCache.PAGE_SIZE * 50);
+        pc.setLogManager(lgm);
         for(int i = 1; i <= 100; i ++) {
             Page pg = pc.getPage(i);
-            assert pg.getData()[0] == (byte)i-1;
+            assert pg.getBytes()[0] == (byte)i-1;
             pg.release();
         }
         pc.close();
+        lgm.close();
 
         assert new File("/tmp/pcacher_simple_test0.db").delete();
+        assert new File("/tmp/pcacher_simple_test0.log").delete();
     }
 
     private PageCache pc1;
@@ -49,7 +57,9 @@ public class PageCacheTest {
     private AtomicInteger noPages1;
     @Test
     public void testPageCacheMultiSimple() throws Exception {
+        LogManager lgm1 = LogManager.create("/tmp/pcacher_simple_test1");
         pc1 = PageCache.create("/tmp/pcacher_simple_test1", PageCache.PAGE_SIZE * 50);
+        pc1.setLogManager(lgm1);
         cdl1 = new CountDownLatch(200);
         noPages1 = new AtomicInteger(0);
         for(int i = 0; i < 200; i ++) {
@@ -58,7 +68,10 @@ public class PageCacheTest {
             new Thread(r).run();
         }
         cdl1.await();
+        pc1.close();
+        lgm1.close();
         assert new File("/tmp/pcacher_simple_test1.db").delete();
+        assert new File("/tmp/pcacher_simple_test1.log").delete();
     }
 
     private void worker1(int id) {
@@ -100,7 +113,9 @@ public class PageCacheTest {
     private Lock lockNew;
     @Test
     public void testPageCacheMulti() throws InterruptedException {
+        LogManager lgm2 = LogManager.create("/tmp/pcacher_multi_test");
         pc2 = PageCache.create("/tmp/pcacher_multi_test", PageCache.PAGE_SIZE * 10);
+        pc2.setLogManager(lgm2);
         mpc = new MockPageCache();
         lockNew = new ReentrantLock();
 
@@ -114,7 +129,10 @@ public class PageCacheTest {
         }
         cdl2.await();
 
+        pc2.close();
+        lgm2.close();
         assert new File("/tmp/pcacher_multi_test.db").delete();
+        assert new File("/tmp/pcacher_multi_test.log").delete();
     }
 
     private void worker2(int id) {
@@ -145,9 +163,9 @@ public class PageCacheTest {
                 } catch (Exception e) {
                     Panic.of(e);
                 }
-                pg.lock();
-                assert Arrays.equals(mpg.getData(), pg.getData());
-                pg.unlock();
+                pg.wLock();
+                assert Arrays.equals(mpg.getBytes(), pg.getBytes());
+                pg.wUnlock();
                 pg.release();
             } else {
                 // update
@@ -167,16 +185,16 @@ public class PageCacheTest {
                 }
                 byte[] newData = RandomUtil.randomBytes(PageCache.PAGE_SIZE);
                 
-                pg.lock();
+                pg.wLock();
                 mpg.setDirty(true);
                 for(int j = 0; j < PageCache.PAGE_SIZE; j ++) {
-                    mpg.getData()[j] = newData[j];
+                    mpg.getBytes()[j] = newData[j];
                 }
                 pg.setDirty(true);
                 for(int j = 0; j < PageCache.PAGE_SIZE; j ++) {
-                    pg.getData()[j] = newData[j];
+                    pg.getBytes()[j] = newData[j];
                 }
-                pg.unlock();
+                pg.wUnlock();
                 pg.release();
             }
         }

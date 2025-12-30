@@ -18,6 +18,7 @@ import com.minisql.backend.dm.page.cache.PageCache;
 import com.minisql.backend.txm.TransactionManager;
 import com.minisql.backend.utils.Panic;
 import com.minisql.backend.utils.ByteUtil;
+import com.minisql.backend.utils.UidUtil;
 
 public class Recover {
 
@@ -78,7 +79,7 @@ public class Recover {
         if(maxPgno == 0) {
             maxPgno = 1;
         }
-        pc.truncateByPgno(maxPgno);
+        pc.trimBadTail(maxPgno);
         System.out.println("Truncate to " + maxPgno + " pages.");
 
         try (LogManager.LogReader reader = lgm.getReader()) {
@@ -173,9 +174,8 @@ public class Recover {
         UpdateLogInfo li = new UpdateLogInfo();
         li.xid = ByteUtil.parseLong(Arrays.copyOfRange(log, OF_XID, OF_UPDATE_UID));
         long uid = ByteUtil.parseLong(Arrays.copyOfRange(log, OF_UPDATE_UID, OF_UPDATE_RAW));
-        li.offset = (short)(uid & ((1L << 16) - 1));
-        uid >>>= 32;
-        li.pgno = (int)(uid & ((1L << 32) - 1));
+        li.offset = UidUtil.getOffset(uid);
+        li.pgno = UidUtil.getPgno(uid);
         int length = (log.length - OF_UPDATE_RAW) / 2;
         li.oldRaw = Arrays.copyOfRange(log, OF_UPDATE_RAW, OF_UPDATE_RAW+length);
         li.newRaw = Arrays.copyOfRange(log, OF_UPDATE_RAW+length, OF_UPDATE_RAW+length*2);

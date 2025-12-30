@@ -4,8 +4,10 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.RandomAccessFile;
 import java.nio.channels.FileChannel;
+import java.util.Map;
 
 import com.minisql.backend.dm.page.Page;
+import com.minisql.backend.dm.logger.LogManager;
 import com.minisql.backend.utils.Panic;
 import com.minisql.common.Error;
 
@@ -19,13 +21,19 @@ public interface PageCache {
 
     void releasePage(Page page);
 
+    void setLogManager(LogManager logManager);
+
+    void markDirtyPage(int pgno, long recLsn);
+
     void close();
 
-    void truncateByPgno(int maxPgno);
+    void trimBadTail(int maxPgno);
 
     int getPageCount();
 
-    void persistPage(Page pg);
+    void persistPageOne(Page pg);
+
+    Map<Integer, Integer> getPageFreeMap();
 
     static PageCacheImpl create(String path, long memory) {
         File f = new File(path+PageCacheImpl.DB_SUFFIX);

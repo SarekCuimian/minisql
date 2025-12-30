@@ -67,16 +67,16 @@ public class LogManagerImpl implements LogManager {
     /** 内存可见运行标志 */
     private volatile boolean running;
 
-    /** 下一条 record 的起始偏移（逻辑分配）*/
+    /** 当前 record 的结尾，下一条 record 的起始偏移（逻辑分配）*/
     private long currentLsn;
 
     /** writer 已写文件边界，还并未刷盘 */ 
     private long writtenLsn;
 
-    /** 日志持久化边界：小于这个 LSN 的日志已经落盘到日志文件 */
+    /** 日志持久化边界：小于等于这个 LSN 的日志已经落盘到日志文件 */
     private long flushedLsn;
 
-    /** 数据页持久化边界：小于这个 LSN 的修改已经落盘到数据文件，崩溃恢复只需从此 LSN 开始 REDO */
+    /** 数据页持久化边界：小于等于这个 LSN 的修改已经落盘到数据文件，崩溃恢复只需从此 LSN 开始 REDO */
     private long checkpointLsn;
 
     /** 刷盘最低要求 LSN：合并并发提交的刷盘目标 LSN，取并发 commit 中最大 LSN，避免重复刷盘 */
@@ -157,10 +157,10 @@ public class LogManagerImpl implements LogManager {
     }
 
     /**
-     * 追加一条日志到内存 buffer，返回该记录的 end LSN
+     * 追加一条日志到内存 buffer，返回该记录的 start/end LSN
      */
     @Override
-    public long log(byte[] payload) {
+    public long[] log(byte[] payload) {
         if (payload == null) {
             throw new IllegalArgumentException("payload is null");
         }
@@ -179,19 +179,20 @@ public class LogManagerImpl implements LogManager {
                 // append 线程等待 writer 清理 buffer 后再次发出 notFull 条件信号
                 notFull.await();
             }
-            // 计算本条记录的 LSN，即下一条记录的起始偏移
+            // 计算本条记录的 end LSN，即下一条记录的起始偏移
             long start = currentLsn;
-            long lsn = start + recordSize;
-            currentLsn = lsn;
+            long end = start + recordSize;
+            currentLsn = end;
 
             // 封装 record 并写入 buffer
-            byte[] record = wrapRecord(lsn, payload);
+            byte[] record = wrapRecord(end, payload);
             ringBuffer.write(start, record);
 
             // 写入后唤醒 writer，buffer 里有数据了，可以写文件
             notEmpty.signal();
-            
-            return lsn;
+
+            // 返回本条记录的起止 LSN
+            return new long[] {start, end};
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException(e);
@@ -271,7 +272,7 @@ public class LogManagerImpl implements LogManager {
     public void setCheckpointLsn(long lsn) {
         lock.lock();
         try {
-            if (lsn < HEADER_SIZE) lsn = HEADER_SIZE;
+            lsn = (lsn < HEADER_SIZE) ? HEADER_SIZE : lsn;
             // header 中的 checkpoint 不应超过 durable 边界
             checkpointLsn = Math.min(lsn, flushedLsn);
 
@@ -644,6 +645,7 @@ public class LogManagerImpl implements LogManager {
 
     /**
      * 只读 reader，用于启动恢复，默认 fileSize 固定为打开时长度
+     * 理论上要具备从checkpoint开始读的能力
      */
     private static final class LogReader implements LogManager.LogReader {
         private final RandomAccessFile raf;

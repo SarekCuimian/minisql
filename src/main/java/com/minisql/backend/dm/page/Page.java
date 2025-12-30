@@ -2,9 +2,13 @@ package com.minisql.backend.dm.page;
 
 public interface Page {
 
-    void lock();
+    void wLock();
 
-    void unlock();
+    void wUnlock();
+
+    void rLock();
+
+    void rUnlock();
 
     void release();
 
@@ -18,6 +22,6 @@ public interface Page {
 
     int getPageNumber();
 
-    byte[] getData();
+    byte[] getBytes();
 
 }

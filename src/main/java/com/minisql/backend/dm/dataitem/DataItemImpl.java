@@ -88,8 +88,15 @@ public class DataItemImpl implements DataItem {
     @Override
     public void before() {
         wLock.lock();
-        pg.setDirty(true);
-        System.arraycopy(raw.raw, raw.start, oldRaw, 0, oldRaw.length);
+        pg.wLock();
+        try {
+            pg.setDirty(true);
+            System.arraycopy(raw.raw, raw.start, oldRaw, 0, oldRaw.length);
+        } catch (RuntimeException e) {
+            pg.wUnlock();
+            wLock.unlock();
+            throw e;
+        }
     }
 
     /**
@@ -103,8 +110,12 @@ public class DataItemImpl implements DataItem {
      */
     @Override
     public void after(long xid) {
-        dm.logDataItem(xid, this);
-        wLock.unlock();
+        try {
+            dm.logDataItem(xid, this);
+        } finally {
+            pg.wUnlock();
+            wLock.unlock();
+        }
     }
 
     /**
@@ -116,8 +127,12 @@ public class DataItemImpl implements DataItem {
      */
     @Override
     public void rollback() {
-        System.arraycopy(oldRaw, 0, raw.raw, raw.start, oldRaw.length);
-        wLock.unlock();
+        try {
+            System.arraycopy(oldRaw, 0, raw.raw, raw.start, oldRaw.length);
+        } finally {
+            pg.wUnlock();
+            wLock.unlock();
+        }
     }
 
     /**
@@ -131,13 +146,13 @@ public class DataItemImpl implements DataItem {
 
     /** 获取写锁 */
     @Override
-    public void lock() {
+    public void wLock() {
         wLock.lock();
     }
 
     /** 释放写锁 */
     @Override
-    public void unlock() {
+    public void wUnlock() {
         wLock.unlock();
     }
 
@@ -159,7 +174,7 @@ public class DataItemImpl implements DataItem {
      * @return Page 实例
      */
     @Override
-    public Page page() {
+    public Page getPage() {
         return pg;
     }
 
