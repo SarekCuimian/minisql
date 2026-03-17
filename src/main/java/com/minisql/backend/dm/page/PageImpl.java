@@ -15,8 +15,6 @@ public class PageImpl implements Page {
     /** 该页对应的最新修改的 LSN */
     private long pageLsn;
 
-    private long recLsn;
-
     private final byte[] bytes;
 
     private final Lock rLock;

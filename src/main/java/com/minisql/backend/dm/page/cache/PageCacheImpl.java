@@ -26,17 +26,13 @@ import com.minisql.common.Error;
 
 public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
 
-    // =========================
     // Constants
-    // =========================
     private static final int MEM_MIN_LIM = 10;
     private static final long FLUSH_INTERVAL_MS = 1000L;
     private static final int MAX_PAGES_PER_BATCH = 64;
     public static final String DB_SUFFIX = ".db";
 
-    // =========================
     // Fields
-    // =========================
     private final RandomAccessFile file;
     private final FileChannel fc;
     private final Lock fileLock;
@@ -53,9 +49,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
     private final ReentrantLock cleanerLock = new ReentrantLock();
     private final Condition hasDirtyPage = cleanerLock.newCondition();
 
-    // =========================
     // Constructor
-    // =========================
     PageCacheImpl(RandomAccessFile file, FileChannel fileChannel, int capacity) {
         super(capacity);
         if (capacity < MEM_MIN_LIM) {
@@ -73,9 +67,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         this.pageNumberCounter = new AtomicInteger((int) length / PAGE_SIZE);
     }
 
-    // =========================
     // Dependency injection
-    // =========================
     @Override
     public void setLogManager(LogManager logManager) {
         this.logManager = logManager;
@@ -83,10 +75,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         startPageCleaner();
     }
 
-    // =========================
     // Public API
-    // =========================
-
     /** 新建 page */
     public int newPage(byte[] initData) {
         int pgno = pageNumberCounter.incrementAndGet();
@@ -273,7 +262,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         /** 批量刷脏页 */
         private void batchFlush(List<pageSnapshot> snapshots) {
             snapshots.clear();
-            List<DirtyPage> pages = dirtyPageTracker.getDirtyPages(MAX_PAGES_PER_BATCH);
+            List<DirtyPage> pages = dirtyPageTracker.getBatchDirtyPages(MAX_PAGES_PER_BATCH);
             int flushedPages = 0;
             for (DirtyPage page : pages) {
                 if (flushedPages >= MAX_PAGES_PER_BATCH) {
@@ -402,7 +391,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
 
     /** 更新 checkpoint */
     private void updateCheckpoint() {
-        long minRecLsn = dirtyPageTracker.minRecLsn();
+        long minRecLsn = dirtyPageTracker.getMinRecLsn();
         long flushedLsn = logManager.getFlushedLsn();
         long checkpoint = (minRecLsn == Long.MAX_VALUE) ? flushedLsn : Math.min(minRecLsn, flushedLsn);
         logManager.setCheckpointLsn(checkpoint);
@@ -468,7 +457,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         private final ReentrantLock lock = new ReentrantLock();
         /** 按 page number 索引 dirty page */
         private final HashMap<Integer, DirtyPage> index = new HashMap<>();
-        /** 按 recovery LSN 顺序保存 dirty page */
+        /** 按 recovery LSN 升序保存 dirty page */
         private final TreeMap<Long, DirtyPage> order = new TreeMap<>();
 
         /**
@@ -515,7 +504,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
          * 获取最小的 recovery LSN
          * @return 最小的 recovery LSN
          */
-        long minRecLsn() {
+        long getMinRecLsn() {
             lock.lock();
             try {
                 return order.isEmpty() ? Long.MAX_VALUE : order.firstKey();
@@ -529,7 +518,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
          * @param max 单个批次最大数量
          * @return dirty page
          */
-        List<DirtyPage> getDirtyPages(int max) {
+        List<DirtyPage> getBatchDirtyPages(int max) {
             List<DirtyPage> list = new ArrayList<>();
             if (max <= 0) {
                 return list;

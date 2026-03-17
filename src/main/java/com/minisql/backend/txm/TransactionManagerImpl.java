@@ -156,15 +156,15 @@ public class TransactionManagerImpl implements TransactionManager {
 
     // 校验 XID 文件合法性，并初始化 xidCounter
     private void checkXidCounter() {
-        long fileLen;
+        long fileSize;
         try {
-            fileLen = file.length();
+            fileSize = file.length();
         } catch (IOException e) {
             Panic.of(Error.BadXIDFileException);
             return;
         }
 
-        if (fileLen < XID_HEADER_SIZE) {
+        if (fileSize < XID_HEADER_SIZE) {
             Panic.of(Error.BadXIDFileException);
         }
 
@@ -177,7 +177,7 @@ public class TransactionManagerImpl implements TransactionManager {
 
         xidCounter = ByteUtil.parseLong(buf.array());
         long expectedLen = getXidPosition(xidCounter + 1);
-        if (expectedLen != fileLen) {
+        if (expectedLen != fileSize) {
             Panic.of(Error.BadXIDFileException);
         }
     }
