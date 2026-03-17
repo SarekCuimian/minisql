@@ -170,8 +170,3 @@ curl -X POST http://127.0.0.1:9906/api/sessions/{sessionId}/sql \
 mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" -Dexec.args="-shutdown /tmp/minisql"
 ```
 
-## 当前说明
-
-- `jps` 默认只显示短类名，所以服务端和客户端都会显示为 `Launcher`
-- 想区分具体进程时，建议使用 `jps -lv`
-- 当前日志文件不会按事务单独删除；未提交事务会在恢复时被 `UNDO`
