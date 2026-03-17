@@ -56,7 +56,6 @@ public class TransactionManagerImpl implements TransactionManager {
             long xid = xidCounter + 1;
             updateXidStatus(xid, ACTIVE);
             incrementXidCounter();
-            lastLsnMap.put(xid, 0L);
             return xid;
         } finally {
             wLock.unlock();
@@ -127,6 +126,22 @@ public class TransactionManagerImpl implements TransactionManager {
     }
 
     @Override
+    public void updateLastLsn(long xid, long lsn) {
+        if (xid <= SUPER_XID) {
+            return;
+        }
+        lastLsnMap.merge(xid, lsn, Math::max);
+    }
+
+    @Override
+    public long getLastLsn(long xid) {
+        if (xid <= SUPER_XID) {
+            return 0L;
+        }
+        return lastLsnMap.getOrDefault(xid, 0L);
+    }
+
+    @Override
     public void close() {
         wLock.lock();
         try {
@@ -141,15 +156,15 @@ public class TransactionManagerImpl implements TransactionManager {
 
     // 校验 XID 文件合法性，并初始化 xidCounter
     private void checkXidCounter() {
-        long fileLen;
+        long fileSize;
         try {
-            fileLen = file.length();
+            fileSize = file.length();
         } catch (IOException e) {
             Panic.of(Error.BadXIDFileException);
             return;
         }
 
-        if (fileLen < XID_HEADER_SIZE) {
+        if (fileSize < XID_HEADER_SIZE) {
             Panic.of(Error.BadXIDFileException);
         }
 
@@ -162,7 +177,7 @@ public class TransactionManagerImpl implements TransactionManager {
 
         xidCounter = ByteUtil.parseLong(buf.array());
         long expectedLen = getXidPosition(xidCounter + 1);
-        if (expectedLen != fileLen) {
+        if (expectedLen != fileSize) {
             Panic.of(Error.BadXIDFileException);
         }
     }
@@ -210,6 +225,5 @@ public class TransactionManagerImpl implements TransactionManager {
     private long getXidPosition(long xid) {
         return XID_HEADER_SIZE + (xid - 1) * XID_STATUS_SIZE;
     }
-
 
 }

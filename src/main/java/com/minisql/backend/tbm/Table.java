@@ -174,6 +174,8 @@ public class Table {
         this.tbm = tbm;
         this.name = tableName;
         this.nextUid = nextUid;
+        this.vm = tbm.getVersionManager();
+        this.dm = tbm.getDataManager();
     }
 
     // =========================================================

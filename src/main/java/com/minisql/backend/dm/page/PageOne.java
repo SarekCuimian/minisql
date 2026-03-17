@@ -41,8 +41,13 @@ public class PageOne {
      * @param pg 页对象
      */
     public static void setVcOpen(Page pg) {
-        pg.setDirty(true);
-        setVcOpen(pg.getData());
+        pg.wLock();
+        try {
+            pg.setDirty(true);
+            setVcOpen(pg.getBytes());
+        } finally {
+            pg.wUnlock();
+        }
     }
 
     /**
@@ -65,8 +70,13 @@ public class PageOne {
      * @param pg 页对象
      */
     public static void setVcClose(Page pg) {
-        pg.setDirty(true);
-        setVcClose(pg.getData());
+        pg.wLock();
+        try {
+            pg.setDirty(true);
+            setVcClose(pg.getBytes());
+        } finally {
+            pg.wUnlock();
+        }
     }
 
     /**
@@ -91,7 +101,12 @@ public class PageOne {
      * 否则返回 {@code false}
      */
     public static boolean checkVc(Page pg) {
-        return checkVc(pg.getData());
+        pg.rLock();
+        try {
+            return checkVc(pg.getBytes());
+        } finally {
+            pg.rUnlock();
+        }
     }
 
     /**

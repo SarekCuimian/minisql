@@ -82,7 +82,7 @@ public class AggregateContext {
         return new ResultSet(headers, rows);
     }
 
-    public static AggregateContext of(List<Field> fields, Aggregate[] aggregates) throws Exception {
+    public static AggregateContext  of(List<Field> fields, Aggregate[] aggregates) throws Exception {
         Map<String, Field> fieldMap = new HashMap<>();
         for (Field f : fields) {
             fieldMap.put(f.getName(), f);

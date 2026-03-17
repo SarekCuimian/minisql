@@ -9,6 +9,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import com.minisql.backend.dm.page.MockPage;
 import com.minisql.backend.dm.page.Page;
 import com.minisql.backend.dm.page.cache.PageCache;
+import com.minisql.backend.dm.logger.LogManager;
 
 public class MockPageCache implements PageCache {
 
@@ -46,7 +47,13 @@ public class MockPageCache implements PageCache {
     public void releasePage(Page page) {}
 
     @Override
-    public void truncateByPgno(int maxPgno) {}
+    public void setLogManager(LogManager logManager) {}
+
+    @Override
+    public void markDirtyPage(int pgno, long recLsn) {}
+
+    @Override
+    public void trimBadTail(int maxPgno) {}
 
     @Override
     public int getPageCount() {
@@ -54,6 +61,11 @@ public class MockPageCache implements PageCache {
     }
 
     @Override
-    public void persistPage(Page pg) {}
+    public void persistPageOne(Page pg) {}
+
+    @Override
+    public Map<Integer, Integer> getPageFreeMap() {
+        return new HashMap<>();
+    }
     
 }

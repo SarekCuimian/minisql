@@ -12,12 +12,12 @@ import com.minisql.common.Error;
  *     <li>跳过空白字符</li>
  * </ul>
  *
- * Tokenizer 会维护当前位置、错误状态、以及一个“peek 缓冲”。
+ * Tokenizer 会维护当前位置、错误状态、以及一个“lookup 缓冲”。
  * <p>
  * 特点：
  * <ul>
- *     <li>peek() 预读 token，但不移动游标</li>
- *     <li>pop() 消费 token，使下次 peek() 获取下一个</li>
+ *     <li>lookup() 预读 token，但不移动游标</li>
+ *     <li>pop() 消费 token，使下次 lookup() 获取下一个</li>
  *     <li>错误状态会在后续继续抛出（err 机制）</li>
  * </ul>
  */
@@ -29,7 +29,7 @@ public class Tokenizer {
     /** 当前读取位置（cursor） */
     private int pos;
 
-    /** peek 后缓存的 token */
+    /** lookup 后缓存的 token */
     private String currentToken;
 
     /** 是否需要刷新（读取新 token） */
@@ -75,7 +75,7 @@ public class Tokenizer {
     }
 
     /**
-     * 消费掉当前 token，使下次 peek() 返回后续 token。
+     * 消费掉当前 token，使下次 lookup() 返回后续 token。
      */
     public void pop() {
         flushToken = true;

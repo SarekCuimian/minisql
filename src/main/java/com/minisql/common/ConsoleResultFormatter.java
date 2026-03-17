@@ -46,6 +46,6 @@ public class ConsoleResultFormatter implements ResultFormatter {
 
     private String formatSeconds(long nanos) {
         double seconds = nanos / 1_000_000_000d;
-        return String.format(Locale.ROOT, "%.2f", seconds);
+        return String.format(Locale.ROOT, "%.3f", seconds);
     }
 }

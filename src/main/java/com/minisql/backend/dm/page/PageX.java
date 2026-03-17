@@ -57,7 +57,12 @@ public class PageX {
      * @return FSO 偏移值
      */
     public static short getFSO(Page pg) {
-        return getFSO(pg.getData());
+        pg.rLock();
+        try {
+            return getFSO(pg.getBytes());
+        } finally {
+            pg.rUnlock();
+        }
     }
 
     /**
@@ -87,11 +92,16 @@ public class PageX {
      * @return 写入的起始偏移（即旧的 FSO）
      */
     public static short insert(Page pg, byte[] raw) {
-        pg.setDirty(true);
-        short offset = getFSO(pg.getData());
-        System.arraycopy(raw, 0, pg.getData(), offset, raw.length);
-        setFSO(pg.getData(), (short) (offset + raw.length));
-        return offset;
+        pg.wLock();
+        try {
+            pg.setDirty(true);
+            short offset = getFSO(pg.getBytes());
+            System.arraycopy(raw, 0, pg.getBytes(), offset, raw.length);
+            setFSO(pg.getBytes(), (short) (offset + raw.length));
+            return offset;
+        } finally {
+            pg.wUnlock();
+        }
     }
 
     /**
@@ -102,7 +112,12 @@ public class PageX {
      * @return 空闲空间字节数
      */
     public static int getFreeSpaceSize(Page pg) {
-        return PageCache.PAGE_SIZE - (int) getFSO(pg.getData());
+        pg.rLock();
+        try {
+            return PageCache.PAGE_SIZE - (int) getFSO(pg.getBytes());
+        } finally {
+            pg.rUnlock();
+        }
     }
 
     /**
@@ -116,12 +131,17 @@ public class PageX {
      * @param offset 指定的写入起始偏移
      */
     public static void recoverInsert(Page pg, byte[] raw, short offset) {
-        pg.setDirty(true);
-        System.arraycopy(raw, 0, pg.getData(), offset, raw.length);
+        pg.wLock();
+        try {
+            pg.setDirty(true);
+            System.arraycopy(raw, 0, pg.getBytes(), offset, raw.length);
 
-        short rawFSO = getFSO(pg.getData());
-        if (rawFSO < offset + raw.length) {
-            setFSO(pg.getData(), (short) (offset + raw.length));
+            short rawFSO = getFSO(pg.getBytes());
+            if (rawFSO < offset + raw.length) {
+                setFSO(pg.getBytes(), (short) (offset + raw.length));
+            }
+        } finally {
+            pg.wUnlock();
         }
     }
 
@@ -134,7 +154,12 @@ public class PageX {
      * @param offset 指定的写入起始偏移
      */
     public static void recoverUpdate(Page pg, byte[] raw, short offset) {
-        pg.setDirty(true);
-        System.arraycopy(raw, 0, pg.getData(), offset, raw.length);
+        pg.wLock();
+        try {
+            pg.setDirty(true);
+            System.arraycopy(raw, 0, pg.getBytes(), offset, raw.length);
+        } finally {
+            pg.wUnlock();
+        }
     }
 }

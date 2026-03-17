@@ -3,7 +3,7 @@ package com.minisql.backend.dm;
 import com.minisql.backend.common.AbstractCache;
 import com.minisql.backend.dm.dataitem.DataItem;
 import com.minisql.backend.dm.dataitem.DataItemImpl;
-import com.minisql.backend.dm.logger.Logger;
+import com.minisql.backend.dm.logger.LogManager;
 import com.minisql.backend.dm.page.Page;
 import com.minisql.backend.dm.page.PageOne;
 import com.minisql.backend.dm.page.PageX;
@@ -15,18 +15,20 @@ import com.minisql.backend.utils.Panic;
 import com.minisql.backend.utils.UidUtil;
 import com.minisql.common.Error;
 
+import java.util.Map;
+
 public class DataManagerImpl extends AbstractCache<DataItem> implements DataManager {
 
     TransactionManager txm;
     PageCache pageCache;
-    Logger logger;
+    LogManager logManager;
     FreeSpaceMap fsm;
     Page pageOne;
 
-    public DataManagerImpl(PageCache pageCache, Logger logger, TransactionManager txm) {
+    public DataManagerImpl(PageCache pageCache, LogManager logManager, TransactionManager txm) {
         super(0);
         this.pageCache = pageCache;
-        this.logger = logger;
+        this.logManager = logManager;
         this.txm = txm;
         this.fsm = new FreeSpaceMap();
     }
@@ -64,24 +66,36 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
         }
 
         Page pg = null;
-        int freeSpaceSize = 0;
+        int freeSpaceSize = freeSpace.size;
         try {
             pg = pageCache.getPage(freeSpace.pgno);
-            // 把一次更新操作序列化成 WAL payload
-            byte[] log = Recover.insertLog(xid, pg, raw);
-            // 把 payload 包入 [Size][Checksum][Data] 并顺序写入 .log 文件
-            logger.log(log);
+            pg.wLock();
+            try {
+                // 把一次更新操作序列化成 WAL payload
+                byte[] payload = Recover.insertLog(xid, pg, raw);
+                // 写入日志缓冲区，并返回该条日志的 LSN 边界
+                long[] pos = logManager.log(payload);
+                long startLsn = pos[LogManager.POS_START];
+                long endLsn = pos[LogManager.POS_END];
+                // 更新当前事务的最新 LSN
+                txm.updateLastLsn(xid, endLsn);
+                // 在 dpt 中记录脏页与首次变脏 recLsn
+                pageCache.markDirtyPage(pg.getPageNumber(), startLsn);
+                short offset = PageX.insert(pg, raw);
+                // 内存页更新后，更新当前页的 LSN
+                pg.setPageLsn(endLsn);
 
-            short offset = PageX.insert(pg, raw);
-            return UidUtil.addressToUid(freeSpace.pgno, offset);
+                freeSpaceSize = PageX.getFreeSpaceSize(pg);
+                return UidUtil.getUid(freeSpace.pgno, offset);
+            } finally {
+                pg.wUnlock();
+            }
 
         } finally {
             // 将取出的pg重新插入FSM
+            fsm.add(freeSpace.pgno, freeSpaceSize);
             if(pg != null) {
-                fsm.add(freeSpace.pgno, PageX.getFreeSpaceSize(pg));
                 pg.release();
-            } else {
-                fsm.add(freeSpace.pgno, freeSpaceSize);
             }
         }
     }
@@ -89,16 +103,33 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
     @Override
     public void close() {
         super.close();
-        logger.close();
         PageOne.setVcClose(pageOne);
         pageOne.release();
         pageCache.close();
+        logManager.close();
     }
 
     // 为xid生成update日志
     public void logDataItem(long xid, DataItem di) {
-        byte[] log = Recover.updateLog(xid, di);
-        logger.log(log);
+        byte[] payLoad = Recover.updateLog(xid, di);
+        long[] pos = logManager.log(payLoad);
+        long startLsn = pos[LogManager.POS_START];
+        long endLsn = pos[LogManager.POS_END];
+        txm.updateLastLsn(xid, endLsn);
+        Page pg = di.getPage();
+        pg.wLock();
+        try {
+            pageCache.markDirtyPage(pg.getPageNumber(), startLsn);
+            pg.setPageLsn(endLsn);
+        } finally {
+            pg.wUnlock();
+        }
+    }
+
+    @Override
+    public void flushLog(long lsn) {
+        if (lsn <= 0) return;
+        logManager.flush(lsn);
     }
 
     public void releaseDataItem(DataItem di) {
@@ -107,12 +138,16 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
 
     @Override
     protected DataItem loadCache(long uid) throws Exception {
-        short offset = (short)(uid & ((1L << 16) - 1));
-        uid >>>= 32;
-        int pgno = (int)(uid & ((1L << 32) - 1));
+        short offset = UidUtil.getOffset(uid);
+        int pgno = UidUtil.getPgno(uid);
         Page pg = pageCache.getPage(pgno);
         try {
-            return DataItem.parseDataItem(pg, offset, this);
+            pg.rLock();
+            try {
+                return DataItem.parseDataItem(pg, offset, this);
+            } finally {
+                pg.rUnlock();
+            }
         } catch (RuntimeException e) {
             pg.release();
             throw e;
@@ -121,7 +156,7 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
 
     @Override
     protected void flushCache(DataItem di) {
-        di.page().release();
+        di.getPage().release();
     }
 
     // 在创建文件时初始化PageOne
@@ -133,7 +168,7 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
         } catch (Exception e) {
             Panic.of(e);
         }
-        pageCache.persistPage(pageOne);
+        pageCache.persistPageOne(pageOne);
     }
 
     // 在打开已有文件时时读入PageOne，并验证正确性
@@ -150,19 +185,9 @@ public class DataManagerImpl extends AbstractCache<DataItem> implements DataMana
      * 初始化 FreeSpaceMap
      */
     void initFreeSpaceMap() {
-        int pageCount = pageCache.getPageCount();
-        for(int i = 2; i <= pageCount; i ++) {
-            Page pg = null;
-            try {
-                pg = pageCache.getPage(i);
-                fsm.add(pg.getPageNumber(), PageX.getFreeSpaceSize(pg));
-            } catch (Exception e) {
-                Panic.of(e);
-            } finally {
-                if(pg != null) {
-                    pg.release();
-                }
-            }
+        Map<Integer, Integer> freeSpaceMap = pageCache.getPageFreeMap();
+        for (Map.Entry<Integer, Integer> entry : freeSpaceMap.entrySet()) {
+            fsm.add(entry.getKey(), entry.getValue());
         }
     }
     

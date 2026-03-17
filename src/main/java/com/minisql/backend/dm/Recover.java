@@ -11,13 +11,14 @@ import com.google.common.primitives.Bytes;
 
 import com.minisql.backend.common.SubArray;
 import com.minisql.backend.dm.dataitem.DataItem;
-import com.minisql.backend.dm.logger.Logger;
+import com.minisql.backend.dm.logger.LogManager;
 import com.minisql.backend.dm.page.Page;
 import com.minisql.backend.dm.page.PageX;
 import com.minisql.backend.dm.page.cache.PageCache;
 import com.minisql.backend.txm.TransactionManager;
 import com.minisql.backend.utils.Panic;
 import com.minisql.backend.utils.ByteUtil;
+import com.minisql.backend.utils.UidUtil;
 
 public class Recover {
 
@@ -54,45 +55,49 @@ public class Recover {
         byte[] newRaw;
     }
 
-    public static void recover(TransactionManager txm, Logger lg, PageCache pc) {
+    public static void recover(TransactionManager txm, LogManager lgm, PageCache pc) {
         System.out.println("Recovering...");
 
-        lg.rewind();
         int maxPgno = 0;
-        while(true) {
-            byte[] log = lg.next();
-            if(log == null) break;
-            int pgno;
-            if(isInsertLog(log)) {
-                InsertLogInfo li = parseInsertLog(log);
-                pgno = li.pgno;
-            } else {
-                UpdateLogInfo li = parseUpdateLog(log);
-                pgno = li.pgno;
-            }
-            if(pgno > maxPgno) {
-                maxPgno = pgno;
+        try (LogManager.LogReader reader = lgm.getReader()) {
+            while(true) {
+                byte[] log = reader.next();
+                if(log == null) break;
+                int pgno;
+                if(isInsertLog(log)) {
+                    InsertLogInfo li = parseInsertLog(log);
+                    pgno = li.pgno;
+                } else {
+                    UpdateLogInfo li = parseUpdateLog(log);
+                    pgno = li.pgno;
+                }
+                if(pgno > maxPgno) {
+                    maxPgno = pgno;
+                }
             }
         }
         if(maxPgno == 0) {
             maxPgno = 1;
         }
-        pc.truncateByPgno(maxPgno);
+        pc.trimBadTail(maxPgno);
         System.out.println("Truncate to " + maxPgno + " pages.");
 
-        redoTransactions(txm, lg, pc);
+        try (LogManager.LogReader reader = lgm.getReader()) {
+            redoTransactions(txm, reader, pc);
+        }
         System.out.println("Redo Transactions Over.");
 
-        undoTransactions(txm, lg, pc);
+        try (LogManager.LogReader reader = lgm.getReader()) {
+            undoTransactions(txm, reader, pc);
+        }
         System.out.println("Undo Transactions Over.");
 
         System.out.println("Recovery Over.");
     }
 
-    private static void redoTransactions(TransactionManager txm, Logger lg, PageCache pc) {
-        lg.rewind();
+    private static void redoTransactions(TransactionManager txm, LogManager.LogReader reader, PageCache pc) {
         while(true) {
-            byte[] log = lg.next();
+            byte[] log = reader.next();
             if(log == null) break;
             if(isInsertLog(log)) {
                 InsertLogInfo li = parseInsertLog(log);
@@ -110,11 +115,10 @@ public class Recover {
         }
     }
 
-    private static void undoTransactions(TransactionManager txm, Logger lg, PageCache pc) {
+    private static void undoTransactions(TransactionManager txm, LogManager.LogReader reader, PageCache pc) {
         Map<Long, List<byte[]>> logCache = new HashMap<>();
-        lg.rewind();
         while(true) {
-            byte[] log = lg.next();
+            byte[] log = reader.next();
             if(log == null) break;
             if(isInsertLog(log)) {
                 InsertLogInfo li = parseInsertLog(log);
@@ -170,9 +174,8 @@ public class Recover {
         UpdateLogInfo li = new UpdateLogInfo();
         li.xid = ByteUtil.parseLong(Arrays.copyOfRange(log, OF_XID, OF_UPDATE_UID));
         long uid = ByteUtil.parseLong(Arrays.copyOfRange(log, OF_UPDATE_UID, OF_UPDATE_RAW));
-        li.offset = (short)(uid & ((1L << 16) - 1));
-        uid >>>= 32;
-        li.pgno = (int)(uid & ((1L << 32) - 1));
+        li.offset = UidUtil.getOffset(uid);
+        li.pgno = UidUtil.getPgno(uid);
         int length = (log.length - OF_UPDATE_RAW) / 2;
         li.oldRaw = Arrays.copyOfRange(log, OF_UPDATE_RAW, OF_UPDATE_RAW+length);
         li.newRaw = Arrays.copyOfRange(log, OF_UPDATE_RAW+length, OF_UPDATE_RAW+length*2);

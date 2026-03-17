@@ -1,13 +1,16 @@
 package com.minisql.backend.dm.page;
 
 import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class MockPage implements Page {
 
     private int pgno;
     private byte[] data;
-    private Lock lock = new ReentrantLock();
+    private final ReadWriteLock lock = new ReentrantReadWriteLock();
+    private final Lock rLock = lock.readLock();
+    private final Lock wLock = lock.writeLock();
 
     public static MockPage newMockPage(int pgno, byte[] data) {
         MockPage mp = new MockPage();
@@ -17,13 +20,23 @@ public class MockPage implements Page {
     }
 
     @Override
-    public void lock() {
-        lock.lock();
+    public void wLock() {
+        wLock.lock();
     }
 
     @Override
-    public void unlock() {
-        lock.unlock();
+    public void wUnlock() {
+        wLock.unlock();
+    }
+
+    @Override
+    public void rLock() {
+        rLock.lock();
+    }
+
+    @Override
+    public void rUnlock() {
+        rLock.unlock();
     }
 
     @Override
@@ -38,12 +51,22 @@ public class MockPage implements Page {
     }
 
     @Override
+    public void setPageLsn(long pageLsn) {
+
+    }
+
+    @Override
+    public long getPageLsn() {
+        return 0;
+    }
+
+    @Override
     public int getPageNumber() {
         return pgno;
     }
 
     @Override
-    public byte[] getData() {
+    public byte[] getBytes() {
         return data;
     }
     
