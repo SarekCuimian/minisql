@@ -4,7 +4,7 @@ import com.minisql.api.entity.enums.ResponseFormat;
 
 import javax.validation.constraints.NotBlank;
 
-public class SqlExecRequest {
+public class SqlExecutionRequest {
 
     @NotBlank(message = "sql 不能为空")
     private String sql;

@@ -46,7 +46,7 @@ public class Error {
     public static final Exception SwitchDatabaseInTxnException = new RuntimeException("Cannot switch database within a transaction!");
 
     // transport
-    public static final Exception InvalidPkgDataException = new RuntimeException("Invalid package getBytes!");
+    public static final Exception MalformedPacketException = new RuntimeException("Malformed packet!");
 
     // server
     public static final Exception NestedTransactionException = new RuntimeException("Nested transaction not supported!");

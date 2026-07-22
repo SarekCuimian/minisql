@@ -116,7 +116,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
             // 发生了并发更新冲突，内部主动回滚
             if(Visibility.isVersionSkip(txm, tx, entry)) {
                 tx.err = Error.ConcurrentUpdateException;
-                internAbort(xid, true);
+                internalAbort(xid, true);
                 tx.autoAborted = true;
                 throw tx.err;
             }
@@ -224,10 +224,10 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
 
     @Override
     public void abort(long xid) {
-        internAbort(xid, false);
+        internalAbort(xid, false);
     }
 
-    private void internAbort(long xid, boolean autoAborted) {
+    private void internalAbort(long xid, boolean autoAborted) {
         Transaction tx;
         lock.lock();
         try {
@@ -274,7 +274,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
         } catch(Exception e) {
             // 死锁等情况
             tx.err = Error.ConcurrentUpdateException;
-            internAbort(xid, true);
+            internalAbort(xid, true);
             tx.autoAborted = true;
             throw tx.err;
         }
@@ -292,7 +292,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
             }
             if (!acquired) {
                 tx.err = Error.LockWaitTimeoutException;
-                internAbort(xid, true);
+                internalAbort(xid, true);
                 tx.autoAborted = true;
                 throw tx.err;
             }

@@ -90,7 +90,7 @@ public class AggregateContext {
         List<Aggregator> list = new ArrayList<>();
         // 遍历聚合数组，依次创建聚合器
         for (Aggregate agg : aggregates) {
-            AggregateFunc function = agg.func;
+            AggregateFunction function = agg.func;
             // 获取字段
             Field field = null;
             if(agg.field != null) {

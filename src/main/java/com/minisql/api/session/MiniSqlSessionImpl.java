@@ -1,11 +1,11 @@
 package com.minisql.api.session;
 
-import com.minisql.common.ExecResult;
-import com.minisql.common.ExecResultEncoder;
-import com.minisql.transport.Encoder;
-import com.minisql.transport.Packager;
+import com.minisql.common.ExecutionResult;
+import com.minisql.common.ExecutionResultCodec;
+import com.minisql.transport.PacketChannel;
+import com.minisql.transport.PacketCodec;
 import com.minisql.transport.Transporter;
-import com.minisql.transport.Package;
+import com.minisql.transport.Packet;
 
 import java.io.IOException;
 import java.net.Socket;
@@ -15,20 +15,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MiniSqlSessionImpl implements MiniSqlSession {
 
-    private final Packager packager;
+    private final PacketChannel packetChannel;
     private final Socket socket;
     private final Object ioLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean(false);
 
     public MiniSqlSessionImpl(String host, int port) throws IOException {
         this.socket = new Socket(host, port);
-        Transporter t = new Transporter(socket);
-        Encoder e = new Encoder();
-        this.packager = new Packager(t, e);
+        Transporter transporter = new Transporter(socket);
+        PacketCodec codec = new PacketCodec();
+        this.packetChannel = new PacketChannel(transporter, codec);
     }
 
     @Override
-    public ExecResult execute(String sql) throws Exception {
+    public ExecutionResult execute(String sql) throws Exception {
         ensureOpen();
         String statement = Objects.requireNonNull(sql, "sql must not be null").trim();
         if(statement.isEmpty()) {
@@ -36,14 +36,14 @@ public class MiniSqlSessionImpl implements MiniSqlSession {
         }
         // 保障单个 Session 的 Socket 线程安全
         synchronized (ioLock) {
-            Package req = new Package(statement.getBytes(StandardCharsets.UTF_8), null);
-            packager.send(req);
-            Package respkg = packager.receive(); 
-            if (respkg.getExc() != null) {
-                throw respkg.getExc();
+            Packet requestPacket = new Packet(statement.getBytes(StandardCharsets.UTF_8), null);
+            packetChannel.send(requestPacket);
+            Packet responsePacket = packetChannel.receive();
+            if (responsePacket.getError() != null) {
+                throw responsePacket.getError();
             }
-            // 传输解包（去掉状态位）后，用结果序列化层恢复 ExecResult
-            return ExecResultEncoder.decode(respkg.getData());
+            // 传输解包（去掉状态位）后，用结果序列化层恢复 ExecutionResult
+            return ExecutionResultCodec.decode(responsePacket.getData());
         }
     }
 
@@ -54,7 +54,7 @@ public class MiniSqlSessionImpl implements MiniSqlSession {
         }
         Exception closeErr = null;
         try {
-            packager.close();
+            packetChannel.close();
         } catch (Exception e) {
             closeErr = e;
         }

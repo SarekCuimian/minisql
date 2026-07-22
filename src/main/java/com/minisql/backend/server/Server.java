@@ -10,11 +10,11 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import com.minisql.backend.dbm.DatabaseManager;
-import com.minisql.common.ExecResult;
-import com.minisql.common.ExecResultEncoder;
-import com.minisql.transport.Encoder;
-import com.minisql.transport.Package;
-import com.minisql.transport.Packager;
+import com.minisql.common.ExecutionResult;
+import com.minisql.common.ExecutionResultCodec;
+import com.minisql.transport.Packet;
+import com.minisql.transport.PacketChannel;
+import com.minisql.transport.PacketCodec;
 import com.minisql.transport.Transporter;
 
 public class Server {
@@ -101,11 +101,11 @@ class HandleSocket implements Runnable {
     public void run() {
         InetSocketAddress address = (InetSocketAddress)socket.getRemoteSocketAddress();
         System.out.println("Establish connection: " + address.getAddress().getHostAddress()+":"+address.getPort());
-        Packager packager = null;
+        PacketChannel packetChannel;
         try {
             Transporter transporter = new Transporter(socket);
-            Encoder encoder = new Encoder();
-            packager = new Packager(transporter, encoder);
+            PacketCodec codec = new PacketCodec();
+            packetChannel = new PacketChannel(transporter, codec);
         } catch(IOException e) {
             e.printStackTrace();
             try {
@@ -118,27 +118,27 @@ class HandleSocket implements Runnable {
         String clientId = address.getAddress().getHostAddress()+":"+address.getPort();
         Executor exe = new Executor(databaseManager, clientId);
         while(true) {
-            Package pkg = null;
+            Packet packet;
             try {
-                pkg = packager.receive();
+                packet = packetChannel.receive();
             } catch(Exception e) {
                 break;
             }
-            byte[] sql = pkg.getData();
+            byte[] sql = packet.getData();
             byte[] result = null;
             Exception e = null;
             try {
-                ExecResult execResult = exe.execute(sql);
+                ExecutionResult executionResult = exe.execute(sql);
                 // 业务结果 → JSON 字节（结果序列化层）
-                result = ExecResultEncoder.encode(execResult);
+                result = ExecutionResultCodec.encode(executionResult);
             } catch (Exception e1) {
                 e = e1;
                 e.printStackTrace();
             }
-            // JSON 字节 → Package（传输封包层，首字节标识异常/正常）
-            pkg = new Package(result, e);
+            // JSON 字节 → Packet（传输封包层，首字节标识异常/正常）
+            packet = new Packet(result, e);
             try {
-                packager.send(pkg);
+                packetChannel.send(packet);
             } catch (Exception e1) {
                 e1.printStackTrace();
                 break;
@@ -146,7 +146,7 @@ class HandleSocket implements Runnable {
         }
         exe.close();
         try {
-            packager.close();
+            packetChannel.close();
         } catch (Exception e) {
             e.printStackTrace();
         }

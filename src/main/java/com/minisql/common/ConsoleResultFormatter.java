@@ -8,14 +8,14 @@ import java.util.Locale;
 public class ConsoleResultFormatter implements ResultFormatter {
 
     @Override
-    public byte[] format(ExecResult result) {
-        if (result.getType() == ExecResult.Type.RESULT) {
+    public byte[] format(ExecutionResult result) {
+        if (result.getType() == ExecutionResult.Type.RESULT) {
             return formatResultSet(result);
         }
         return formatOK(result);
     }
 
-    private byte[] formatResultSet(ExecResult result) {
+    private byte[] formatResultSet(ExecutionResult result) {
         StringBuilder sb = new StringBuilder();
         ResultSet data = result.getResultSet();
         if (data != null && !data.getHeaders().isEmpty()) {
@@ -28,7 +28,7 @@ public class ConsoleResultFormatter implements ResultFormatter {
         return sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
 
-    private byte[] formatOK(ExecResult result) {
+    private byte[] formatOK(ExecutionResult result) {
         String base = (result.getMessage() == null || result.getMessage().isEmpty()) 
                     ? "Query OK" : result.getMessage();
 

@@ -2,7 +2,7 @@ package com.minisql.backend.aggregator;
 
 import java.util.Locale;
 
-public enum AggregateFunc {
+public enum AggregateFunction {
     COUNT(true),
     SUM(false),
     AVG(false),
@@ -11,7 +11,7 @@ public enum AggregateFunc {
 
     private final boolean allowStar;
 
-    AggregateFunc(boolean allowStar) {
+    AggregateFunction(boolean allowStar) {
         this.allowStar = allowStar;
     }
 
@@ -19,7 +19,7 @@ public enum AggregateFunc {
         return allowStar;
     }
 
-    public static AggregateFunc from(String s) {
-        return AggregateFunc.valueOf(s.toUpperCase(Locale.ROOT));
+    public static AggregateFunction from(String value) {
+        return AggregateFunction.valueOf(value.toUpperCase(Locale.ROOT));
     }
 }

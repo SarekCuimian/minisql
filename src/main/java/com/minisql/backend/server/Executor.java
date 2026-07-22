@@ -25,16 +25,15 @@ import com.minisql.backend.parser.statement.Select;
 import com.minisql.backend.parser.statement.Show;
 import com.minisql.backend.parser.statement.Update;
 import com.minisql.backend.parser.statement.Use;
-import com.minisql.backend.tbm.BeginResult;
 import com.minisql.backend.tbm.TableManager;
-import com.minisql.common.ExecResult;
+import com.minisql.common.ExecutionResult;
 import com.minisql.common.StatementResult;
 import com.minisql.common.ResultSet;
 import com.minisql.common.Error;
 
 /**
  * Executor 负责接收 SQL 字节流、解析语句、调度 TableManager 执行具体操作，
- * 同时管理事务上下文（xid）并返回结构化的 {@link ExecResult}。
+ * 同时管理事务上下文（xid）并返回结构化的 {@link ExecutionResult}。
  * <p>
  * 特点：
  * <ul>
@@ -91,7 +90,7 @@ public class Executor {
      * @return 执行结果
      * @throws Exception SQL 执行过程中出现的异常
      */
-    public ExecResult execute(byte[] sql) throws Exception {
+    public ExecutionResult execute(byte[] sql) throws Exception {
         String sqlLog = new String(sql);
         sqlLog.replace("\r", "").replace("\n", "");
         LOGGER.info("[client={}] Execute: {}", clientId, sqlLog);
@@ -114,9 +113,9 @@ public class Executor {
                 throw Error.NestedTransactionException;
             }
             long start = System.nanoTime();
-            BeginResult r = tbm.begin((Begin) stat);
-            xid = r.xid;
-            return ExecResult.from(r.result, resultType(stat), System.nanoTime() - start);
+            xid = tbm.begin((Begin) stat);
+            StatementResult result = StatementResult.message("begin", 0);
+            return ExecutionResult.from(result, resultType(stat), System.nanoTime() - start);
 
         // COMMIT
         } else if(Commit.class.isInstance(stat)) {
@@ -125,9 +124,10 @@ public class Executor {
                 throw Error.NoTransactionException;
             }
             long start = System.nanoTime();
-            StatementResult res = tbm.commit(xid);
+            tbm.commit(xid);
             xid = 0;
-            return ExecResult.from(res, resultType(stat), System.nanoTime() - start);
+            StatementResult res = StatementResult.message("commit", 0);
+            return ExecutionResult.from(res, resultType(stat), System.nanoTime() - start);
 
         // ROLLBACK
         } else if(Abort.class.isInstance(stat)) {
@@ -136,13 +136,14 @@ public class Executor {
                 throw Error.NoTransactionException;
             }
             long start = System.nanoTime();
-            StatementResult res = tbm.abort(xid);
+            tbm.abort(xid);
             xid = 0;
-            return ExecResult.from(res, resultType(stat), System.nanoTime() - start);
+            StatementResult res = StatementResult.message("rollback", 0);
+            return ExecutionResult.from(res, resultType(stat), System.nanoTime() - start);
 
-        // 非事务控制语句 → 进入 executeSQL
+        // 非事务控制语句 → 进入 executeSql
         } else {
-            return executeSQL(stat);
+            return executeSql(stat);
         }
     }
 
@@ -152,12 +153,12 @@ public class Executor {
      * @param stat 解析后的语法对象
      * @return 执行结果的字节数组
      */
-    private ExecResult executeSQL(Object  stat) throws Exception {
+    private ExecutionResult executeSql(Object stat) throws Exception {
         // SHOW DATABASES 不依赖具体 DB，单独处理
         if(stat instanceof Show && ((Show) stat).target == Show.Target.DATABASES) {
             long start = System.nanoTime();
             StatementResult payload = showDatabases();
-            return ExecResult.from(payload, resultType(stat), System.nanoTime() - start);
+            return ExecutionResult.from(payload, resultType(stat), System.nanoTime() - start);
         }
 
         TableManager tbm = getTableManager();
@@ -167,8 +168,7 @@ public class Executor {
         // 自动开始临时事务（如果当前不在事务中）
         if(xid == 0) {
             tmpTransaction = true;
-            BeginResult r = tbm.begin(new Begin());
-            xid = r.xid;
+            xid = tbm.begin(new Begin());
         }
 
         long start = System.nanoTime();
@@ -191,7 +191,7 @@ public class Executor {
             } else if(Update.class.isInstance(stat)) {
                 res = tbm.update(xid, (Update)stat);
             }
-            return ExecResult.from(res, resultType(stat), System.nanoTime() - start);
+            return ExecutionResult.from(res, resultType(stat), System.nanoTime() - start);
 
         } catch(Exception e1) {
             e = e1;
@@ -222,28 +222,28 @@ public class Executor {
                 Describe.class.isInstance(stat);
     }
 
-    private ExecResult.Type resultType(Object stat) {
-        return isQueryStatement(stat) ? ExecResult.Type.RESULT : ExecResult.Type.OK;
+    private ExecutionResult.Type resultType(Object stat) {
+        return isQueryStatement(stat) ? ExecutionResult.Type.RESULT : ExecutionResult.Type.OK;
     }
 
-    private ExecResult handleUse(Use use) throws Exception {
+    private ExecutionResult handleUse(Use use) throws Exception {
         ensureNoTransaction();
         DatabaseContext newCtx = databaseManager.acquire(use.databaseName);
         databaseManager.release(dbContext);
         dbContext = newCtx;
         long start = System.nanoTime();
         StatementResult payload = StatementResult.message("Database changed to " + use.databaseName, 0);
-        return ExecResult.from(payload, resultType(use), System.nanoTime() - start);
+        return ExecutionResult.from(payload, resultType(use), System.nanoTime() - start);
     }
 
-    private ExecResult handleCreateDatabase(CreateDatabase createDatabase) throws Exception {
+    private ExecutionResult handleCreateDatabase(CreateDatabase createDatabase) throws Exception {
         long start = System.nanoTime();
         databaseManager.create(createDatabase.databaseName);
         StatementResult payload = StatementResult.message("create database " + createDatabase.databaseName, 0);
-        return ExecResult.from(payload, resultType(createDatabase), System.nanoTime() - start);
+        return ExecutionResult.from(payload, resultType(createDatabase), System.nanoTime() - start);
     }
 
-    private ExecResult handleDropDatabase(DropDatabase dropDatabase) throws Exception {
+    private ExecutionResult handleDropDatabase(DropDatabase dropDatabase) throws Exception {
         ensureNoTransaction();
         if(dbContext != null && dropDatabase.databaseName.equals(dbContext.getName())) {
             databaseManager.release(dbContext);
@@ -252,7 +252,7 @@ public class Executor {
         long start = System.nanoTime();
         databaseManager.drop(dropDatabase.databaseName);
         StatementResult payload = StatementResult.message("drop database " + dropDatabase.databaseName, 0);
-        return ExecResult.from(payload, resultType(dropDatabase), System.nanoTime() - start);
+        return ExecutionResult.from(payload, resultType(dropDatabase), System.nanoTime() - start);
     }
 
     private TableManager getTableManager() throws Exception {

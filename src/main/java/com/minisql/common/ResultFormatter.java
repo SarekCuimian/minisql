@@ -5,5 +5,5 @@ package com.minisql.common;
  */
 public interface ResultFormatter {
 
-    byte[] format(ExecResult result);
+    byte[] format(ExecutionResult result);
 }

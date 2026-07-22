@@ -84,22 +84,17 @@ public class TableManagerImpl implements TableManager {
     }
 
     @Override
-    public BeginResult begin(Begin begin) {
-        BeginResult res = new BeginResult();
+    public long begin(Begin begin) {
         IsolationLevel level = begin.isolationLevel == null ? IsolationLevel.READ_COMMITTED : begin.isolationLevel;
-        res.xid = vm.begin(level);
-        res.result = StatementResult.message("begin", 0);
-        return res;
+        return vm.begin(level);
     }
     @Override
-    public StatementResult commit(long xid) throws Exception {
+    public void commit(long xid) throws Exception {
         vm.commit(xid);
-        return StatementResult.message("commit", 0);
     }
     @Override
-    public StatementResult abort(long xid) {
+    public void abort(long xid) {
         vm.abort(xid);
-        return StatementResult.message("abort", 0);
     }
     @Override
     public StatementResult show(long xid, Show show) {

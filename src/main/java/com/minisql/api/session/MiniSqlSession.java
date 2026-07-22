@@ -1,8 +1,8 @@
 package com.minisql.api.session;
 
-import com.minisql.common.ExecResult;
+import com.minisql.common.ExecutionResult;
 
 public interface MiniSqlSession {
-    ExecResult execute(String sql) throws Exception;
+    ExecutionResult execute(String sql) throws Exception;
     void close();
 }

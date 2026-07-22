@@ -12,7 +12,7 @@ import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import com.minisql.common.ConsoleResultFormatter;
-import com.minisql.common.ExecResult;
+import com.minisql.common.ExecutionResult;
 import com.minisql.common.ResultFormatter;
 
 public class Shell {
@@ -72,7 +72,7 @@ public class Shell {
                             break;
                         }
                         try {
-                            ExecResult res = client.execute(sql.getBytes());
+                            ExecutionResult res = client.execute(sql.getBytes());
                             byte[] formatted = formatter.format(res);
                             System.out.println(new String(formatted, StandardCharsets.UTF_8));
                             System.out.println();

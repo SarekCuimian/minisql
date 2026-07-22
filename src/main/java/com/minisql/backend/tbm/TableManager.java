@@ -10,9 +10,9 @@ public interface TableManager {
     VersionManager getVersionManager();
     DataManager getDataManager();
 
-    BeginResult begin(Begin begin);
-    StatementResult commit(long xid) throws Exception;
-    StatementResult abort(long xid);
+    long begin(Begin begin);
+    void commit(long xid) throws Exception;
+    void abort(long xid);
 
     StatementResult show(long xid, Show show);
     StatementResult describe(long xid, Describe describe) throws Exception;

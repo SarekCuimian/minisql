@@ -8,7 +8,7 @@ import com.minisql.backend.parser.statement.Begin;
 import com.minisql.backend.parser.statement.Commit;
 import com.minisql.backend.parser.statement.Create;
 import com.minisql.backend.parser.statement.Aggregate;
-import com.minisql.backend.aggregator.AggregateFunc;
+import com.minisql.backend.aggregator.AggregateFunction;
 import com.minisql.backend.parser.statement.Delete;
 import com.minisql.backend.parser.statement.Describe;
 import com.minisql.backend.parser.statement.Drop;
@@ -605,7 +605,7 @@ public class Parser {
 
     private static int getAggregateIndex(Select select, String funcToken, String arg) {
         if(select.aggregates == null) return -1;
-        AggregateFunc func = AggregateFunc.from(funcToken);
+        AggregateFunction func = AggregateFunction.from(funcToken);
         for (int i = 0; i < select.aggregates.length; i++) {
             Aggregate agg = select.aggregates[i];
             String aggField = agg.field;
@@ -988,9 +988,9 @@ public class Parser {
             throw Error.InvalidCommandException;
         }
         tokenizer.pop();
-        AggregateFunc func;
+        AggregateFunction func;
         try {
-            func = AggregateFunc.from(funcToken);
+            func = AggregateFunction.from(funcToken);
         } catch (Exception e) {
             throw Error.InvalidCommandException;
         }
@@ -1046,7 +1046,7 @@ public class Parser {
     private static boolean isAggregateFunc(String token) {
         if(token == null) return false;
         try {
-            AggregateFunc.from(token);
+            AggregateFunction.from(token);
             return true;
         } catch (Exception e) {
             return false;
