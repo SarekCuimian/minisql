@@ -1,8 +1,8 @@
 package com.minisql.backend.tbm;
 
-import com.minisql.common.QueryResult;
+import com.minisql.common.StatementResult;
 
 public class BeginResult {
     public long xid;
-    public QueryResult result;
+    public StatementResult result;
 }

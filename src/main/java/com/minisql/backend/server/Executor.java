@@ -28,7 +28,7 @@ import com.minisql.backend.parser.statement.Use;
 import com.minisql.backend.tbm.BeginResult;
 import com.minisql.backend.tbm.TableManager;
 import com.minisql.common.ExecResult;
-import com.minisql.common.QueryResult;
+import com.minisql.common.StatementResult;
 import com.minisql.common.ResultSet;
 import com.minisql.common.Error;
 
@@ -125,7 +125,7 @@ public class Executor {
                 throw Error.NoTransactionException;
             }
             long start = System.nanoTime();
-            QueryResult res = tbm.commit(xid);
+            StatementResult res = tbm.commit(xid);
             xid = 0;
             return ExecResult.from(res, resultType(stat), System.nanoTime() - start);
 
@@ -136,7 +136,7 @@ public class Executor {
                 throw Error.NoTransactionException;
             }
             long start = System.nanoTime();
-            QueryResult res = tbm.abort(xid);
+            StatementResult res = tbm.abort(xid);
             xid = 0;
             return ExecResult.from(res, resultType(stat), System.nanoTime() - start);
 
@@ -156,7 +156,7 @@ public class Executor {
         // SHOW DATABASES 不依赖具体 DB，单独处理
         if(stat instanceof Show && ((Show) stat).target == Show.Target.DATABASES) {
             long start = System.nanoTime();
-            QueryResult payload = showDatabases();
+            StatementResult payload = showDatabases();
             return ExecResult.from(payload, resultType(stat), System.nanoTime() - start);
         }
 
@@ -173,7 +173,7 @@ public class Executor {
 
         long start = System.nanoTime();
         try {
-            QueryResult res = null;
+            StatementResult res = null;
             if(Show.class.isInstance(stat)) {
                 res = tbm.show(xid, (Show)stat);
             } else if(Describe.class.isInstance(stat)) {
@@ -232,14 +232,14 @@ public class Executor {
         databaseManager.release(dbContext);
         dbContext = newCtx;
         long start = System.nanoTime();
-        QueryResult payload = QueryResult.message("Database changed to " + use.databaseName, 0);
+        StatementResult payload = StatementResult.message("Database changed to " + use.databaseName, 0);
         return ExecResult.from(payload, resultType(use), System.nanoTime() - start);
     }
 
     private ExecResult handleCreateDatabase(CreateDatabase createDatabase) throws Exception {
         long start = System.nanoTime();
         databaseManager.create(createDatabase.databaseName);
-        QueryResult payload = QueryResult.message("create database " + createDatabase.databaseName, 0);
+        StatementResult payload = StatementResult.message("create database " + createDatabase.databaseName, 0);
         return ExecResult.from(payload, resultType(createDatabase), System.nanoTime() - start);
     }
 
@@ -251,7 +251,7 @@ public class Executor {
         }
         long start = System.nanoTime();
         databaseManager.drop(dropDatabase.databaseName);
-        QueryResult payload = QueryResult.message("drop database " + dropDatabase.databaseName, 0);
+        StatementResult payload = StatementResult.message("drop database " + dropDatabase.databaseName, 0);
         return ExecResult.from(payload, resultType(dropDatabase), System.nanoTime() - start);
     }
 
@@ -271,13 +271,13 @@ public class Executor {
     /*
     * 获取数据库列表
      */
-    private QueryResult showDatabases() {
+    private StatementResult showDatabases() {
         List<String> dbs = databaseManager.show();
         List<List<String>> rows = new java.util.ArrayList<>();
         for (String db : dbs) {
             rows.add(List.of(db));
         }
-        return QueryResult.resultSet(new ResultSet(List.of("Database"), rows));
+        return StatementResult.resultSet(new ResultSet(List.of("Database"), rows));
     }
 
     private void tryUseDefaultDatabase() {

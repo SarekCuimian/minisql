@@ -1,6 +1,7 @@
 package com.minisql.common;
 
 import com.google.gson.Gson;
+import com.google.gson.annotations.SerializedName;
 
 import java.nio.charset.StandardCharsets;
 
@@ -33,19 +34,20 @@ public final class ExecResultEncoder {
 
     private static class Content {
         ExecResult.Type type;
-        QueryResult queryResult;
+        @SerializedName("queryResult")
+        StatementResult statementResult;
         long elapsedNanos;
 
         static Content from(ExecResult result) {
             Content content = new Content();
             content.type = result.getType();
-            content.queryResult = result.getOpResult();
+            content.statementResult = result.getOpResult();
             content.elapsedNanos = result.getElapsedNanos();
             return content;
         }
 
         ExecResult toResult() {
-            return ExecResult.from(queryResult, type, elapsedNanos);
+            return ExecResult.from(statementResult, type, elapsedNanos);
         }
     }
 }

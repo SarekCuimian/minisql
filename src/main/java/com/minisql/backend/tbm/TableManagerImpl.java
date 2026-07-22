@@ -20,7 +20,7 @@ import com.minisql.backend.parser.statement.Select;
 import com.minisql.backend.parser.statement.Show;
 import com.minisql.backend.parser.statement.Update;
 import com.minisql.backend.utils.ByteUtil;
-import com.minisql.common.QueryResult;
+import com.minisql.common.StatementResult;
 import com.minisql.common.ResultSet;
 import com.minisql.backend.vm.IsolationLevel;
 import com.minisql.backend.vm.VersionManager;
@@ -88,26 +88,26 @@ public class TableManagerImpl implements TableManager {
         BeginResult res = new BeginResult();
         IsolationLevel level = begin.isolationLevel == null ? IsolationLevel.READ_COMMITTED : begin.isolationLevel;
         res.xid = vm.begin(level);
-        res.result = QueryResult.message("begin", 0);
+        res.result = StatementResult.message("begin", 0);
         return res;
     }
     @Override
-    public QueryResult commit(long xid) throws Exception {
+    public StatementResult commit(long xid) throws Exception {
         vm.commit(xid);
-        return QueryResult.message("commit", 0);
+        return StatementResult.message("commit", 0);
     }
     @Override
-    public QueryResult abort(long xid) {
+    public StatementResult abort(long xid) {
         vm.abort(xid);
-        return QueryResult.message("abort", 0);
+        return StatementResult.message("abort", 0);
     }
     @Override
-    public QueryResult show(long xid, Show show) {
+    public StatementResult show(long xid, Show show) {
         // SHOW DATABASES 在 Executor 里直接处理，这里统一返回当前库的表列表
         return showTables(xid);
     }
     @Override
-    public QueryResult describe(long xid, Describe describe) throws Exception {
+    public StatementResult describe(long xid, Describe describe) throws Exception {
         rLock.lock();
         try {
             Table table = tableCache.get(describe.tableName);
@@ -138,14 +138,14 @@ public class TableManagerImpl implements TableManager {
                 row.add("");
                 rows.add(row);
             }
-            return QueryResult.resultSet(new ResultSet(headers, rows));
+            return StatementResult.resultSet(new ResultSet(headers, rows));
         } finally {
             rLock.unlock();
         }
     }
 
     @Override
-    public QueryResult drop(long xid, Drop drop) throws Exception {
+    public StatementResult drop(long xid, Drop drop) throws Exception {
         wLock.lock();
         try {
             // 通过 uid -> Table 映射按链表顺序查找目标表
@@ -186,14 +186,14 @@ public class TableManagerImpl implements TableManager {
             }
 
             tableCache.remove(cur.name);
-            return QueryResult.message("drop table " + drop.tableName, 0);
+            return StatementResult.message("drop table " + drop.tableName, 0);
         } finally {
             wLock.unlock();
         }
     }
     
     @Override
-    public QueryResult create(long xid, Create create) throws Exception {
+    public StatementResult create(long xid, Create create) throws Exception {
         wLock.lock();
         try {
             if(tableCache.containsKey(create.tableName)) {
@@ -202,13 +202,13 @@ public class TableManagerImpl implements TableManager {
             Table table = Table.createTable(this, firstTableUid(), xid, create);
             updateFirstTableUid(table.uid);
             tableCache.put(create.tableName, table);
-            return QueryResult.message("create " + create.tableName, 0);
+            return StatementResult.message("create " + create.tableName, 0);
         } finally {
             wLock.unlock();
         }
     }
     @Override
-    public QueryResult insert(long xid, Insert insert) throws Exception {
+    public StatementResult insert(long xid, Insert insert) throws Exception {
         rLock.lock();
         try {
             Table table = tableCache.get(insert.tableName);
@@ -216,7 +216,7 @@ public class TableManagerImpl implements TableManager {
                 throw Error.TableNotFoundException;
             }
             table.insert(xid, insert);
-            return QueryResult.message("insert", 1);
+            return StatementResult.message("insert", 1);
         } finally {
             rLock.unlock();
         }
@@ -227,7 +227,7 @@ public class TableManagerImpl implements TableManager {
      * @param xid 事务 id
      * @return
      */
-    private QueryResult showTables(long xid) {
+    private StatementResult showTables(long xid) {
         LinkedHashSet<String> names = new LinkedHashSet<>();
         rLock.lock();
         try {
@@ -242,11 +242,11 @@ public class TableManagerImpl implements TableManager {
         for (String name : names) {
             rows.add(List.of(name));
         }
-        return QueryResult.resultSet(new ResultSet(List.of(header), rows));
+        return StatementResult.resultSet(new ResultSet(List.of(header), rows));
     }
 
     @Override
-    public QueryResult read(long xid, Select read) throws Exception {
+    public StatementResult read(long xid, Select read) throws Exception {
         rLock.lock();
         try {
             Table table = tableCache.get(read.tableName);
@@ -254,13 +254,13 @@ public class TableManagerImpl implements TableManager {
                 throw Error.TableNotFoundException;
             }
             ResultSet data = table.read(xid, read);
-            return QueryResult.resultSet(data);
+            return StatementResult.resultSet(data);
         } finally {
             rLock.unlock();
         }
     }
     @Override
-    public QueryResult update(long xid, Update update) throws Exception {
+    public StatementResult update(long xid, Update update) throws Exception {
         rLock.lock();
         try {
             Table table = tableCache.get(update.tableName);
@@ -268,13 +268,13 @@ public class TableManagerImpl implements TableManager {
                 throw Error.TableNotFoundException;
             }
             int count = table.update(xid, update);
-            return QueryResult.message("update", count);
+            return StatementResult.message("update", count);
         } finally {
             rLock.unlock();
         }
     }
     @Override
-    public QueryResult delete(long xid, Delete delete) throws Exception {
+    public StatementResult delete(long xid, Delete delete) throws Exception {
         rLock.lock();
         try {
             Table table = tableCache.get(delete.tableName);
@@ -282,7 +282,7 @@ public class TableManagerImpl implements TableManager {
                 throw Error.TableNotFoundException;
             }
             int count = table.delete(xid, delete);
-            return QueryResult.message("delete", count);
+            return StatementResult.message("delete", count);
         } finally {
             rLock.unlock();
         }

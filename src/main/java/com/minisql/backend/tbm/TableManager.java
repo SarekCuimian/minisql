@@ -3,7 +3,7 @@ package com.minisql.backend.tbm;
 import com.minisql.backend.dm.DataManager;
 import com.minisql.backend.parser.statement.*;
 import com.minisql.backend.utils.ByteUtil;
-import com.minisql.common.QueryResult;
+import com.minisql.common.StatementResult;
 import com.minisql.backend.vm.VersionManager;
 
 public interface TableManager {
@@ -11,20 +11,20 @@ public interface TableManager {
     DataManager getDataManager();
 
     BeginResult begin(Begin begin);
-    QueryResult commit(long xid) throws Exception;
-    QueryResult abort(long xid);
+    StatementResult commit(long xid) throws Exception;
+    StatementResult abort(long xid);
 
-    QueryResult show(long xid, Show show);
-    QueryResult describe(long xid, Describe describe) throws Exception;
+    StatementResult show(long xid, Show show);
+    StatementResult describe(long xid, Describe describe) throws Exception;
 
-    QueryResult drop(long xid, Drop drop) throws Exception;
+    StatementResult drop(long xid, Drop drop) throws Exception;
 
-    QueryResult create(long xid, Create create) throws Exception;
+    StatementResult create(long xid, Create create) throws Exception;
 
-    QueryResult insert(long xid, Insert insert) throws Exception;
-    QueryResult read(long xid, Select select) throws Exception;
-    QueryResult update(long xid, Update update) throws Exception;
-    QueryResult delete(long xid, Delete delete) throws Exception;
+    StatementResult insert(long xid, Insert insert) throws Exception;
+    StatementResult read(long xid, Select select) throws Exception;
+    StatementResult update(long xid, Update update) throws Exception;
+    StatementResult delete(long xid, Delete delete) throws Exception;
 
     /**
      * 创建一个表管理器
