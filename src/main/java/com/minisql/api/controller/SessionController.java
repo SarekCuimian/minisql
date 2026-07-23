@@ -9,9 +9,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import com.minisql.api.entity.response.SessionCreateResponse;
-import com.minisql.api.entity.request.SqlExecutionRequest;
-import com.minisql.api.entity.response.SqlExecutionResponse;
+import com.minisql.api.dto.response.SessionCreateResponse;
+import com.minisql.api.dto.request.SqlExecutionRequest;
+import com.minisql.api.dto.response.SqlExecutionResponse;
 import com.minisql.api.service.SqlService;
 import com.minisql.api.exception.SessionNotFoundException;
 import com.minisql.api.session.SessionManager;
@@ -46,7 +46,6 @@ public class SessionController {
     public ResponseEntity<SqlExecutionResponse<?>> executeWithSession(@PathVariable String sessionId,
                                                                       @Valid @RequestBody SqlExecutionRequest request) {
         try {
-            // boolean text = request.getFormat() == null || request.getFormat().isText();
             SqlExecutionResponse<?> response = sqlService.executeWithSession(sessionId, request.getSql(), request.getFormat());
             return ResponseEntity.ok(response);
         } catch (SessionNotFoundException ex) {

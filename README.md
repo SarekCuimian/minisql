@@ -2,7 +2,7 @@
 
 MiniSQL 是一个基于 Java 的小型数据库项目，当前代码包含三部分入口：
 
-- `com.minisql.backend.Launcher`：数据库 TCP 服务端
+- `com.minisql.server.Launcher`：数据库 TCP 服务端
 - `com.minisql.client.Launcher`：交互式命令行客户端
 - `com.minisql.api.MiniSqlApplication`：基于 Spring Boot 的 HTTP API
 
@@ -45,7 +45,7 @@ mvn clean compile
 下面命令会在指定目录创建数据库根目录，并自动创建默认库：
 
 ```bash
-mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" -Dexec.args="-create /tmp/minisql"
+mvn exec:java -Dexec.mainClass="com.minisql.server.Launcher" -Dexec.args="-create /tmp/minisql"
 ```
 
 ### 3. 启动数据库服务端
@@ -53,7 +53,7 @@ mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" -Dexec.args="-crea
 服务端固定监听 `9999` 端口：
 
 ```bash
-mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" -Dexec.args="-open /tmp/minisql"
+mvn exec:java -Dexec.mainClass="com.minisql.server.Launcher" -Dexec.args="-open /tmp/minisql"
 ```
 
 也可以直接使用脚本：
@@ -167,7 +167,7 @@ curl -X POST http://127.0.0.1:9906/api/sessions/{sessionId}/sql \
 如果只想关闭某个数据目录对应的数据库资源，可以执行：
 
 ```bash
-mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" -Dexec.args="-shutdown /tmp/minisql"
+mvn exec:java -Dexec.mainClass="com.minisql.server.Launcher" -Dexec.args="-shutdown /tmp/minisql"
 ```
 
 ## 当前说明

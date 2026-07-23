@@ -1,7 +1,7 @@
 package com.minisql.api.session;
 
-import com.minisql.common.ExecutionResult;
-import com.minisql.common.ExecutionResultCodec;
+import com.minisql.result.ExecutionResult;
+import com.minisql.result.ExecutionResultCodec;
 import com.minisql.transport.PacketChannel;
 import com.minisql.transport.PacketCodec;
 import com.minisql.transport.Transporter;
@@ -36,14 +36,14 @@ public class MiniSqlSessionImpl implements MiniSqlSession {
         }
         // 保障单个 Session 的 Socket 线程安全
         synchronized (ioLock) {
-            Packet requestPacket = new Packet(statement.getBytes(StandardCharsets.UTF_8), null);
+            Packet requestPacket = Packet.data(statement.getBytes(StandardCharsets.UTF_8));
             packetChannel.send(requestPacket);
             Packet responsePacket = packetChannel.receive();
-            if (responsePacket.getError() != null) {
+            if (!responsePacket.isSuccess()) {
                 throw responsePacket.getError();
             }
             // 传输解包（去掉状态位）后，用结果序列化层恢复 ExecutionResult
-            return ExecutionResultCodec.decode(responsePacket.getData());
+            return ExecutionResultCodec.decode(responsePacket.getPayload());
         }
     }
 

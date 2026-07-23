@@ -11,9 +11,9 @@ import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
-import com.minisql.common.ConsoleResultFormatter;
-import com.minisql.common.ExecutionResult;
-import com.minisql.common.ResultFormatter;
+import com.minisql.result.format.ConsoleResultFormatter;
+import com.minisql.result.ExecutionResult;
+import com.minisql.result.format.ResultFormatter;
 
 public class Shell {
     private static final String ANSI_RESET = "\u001B[0m";

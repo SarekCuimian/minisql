@@ -1,0 +1,12 @@
+{"properties": [
+  {
+    "name": "minisql.engine.host",
+    "type": "java.lang.String",
+    "description": "A description for 'minisql.engine.host'."
+  },
+  {
+    "name": "minisql.engine.port",
+    "type": "java.lang.String",
+    "description": "A description for 'minisql.engine.port'."
+  }
+]}

@@ -1,7 +1,7 @@
 package com.minisql.client;
 
-import com.minisql.common.ExecutionResult;
-import com.minisql.common.ExecutionResultCodec;
+import com.minisql.result.ExecutionResult;
+import com.minisql.result.ExecutionResultCodec;
 import com.minisql.transport.Packet;
 import com.minisql.transport.PacketChannel;
 
@@ -13,13 +13,13 @@ public class Client {
     }
 
     public ExecutionResult execute(byte[] stat) throws Exception {
-        Packet requestPacket = new Packet(stat, null);
+        Packet requestPacket = Packet.data(stat);
         Packet responsePacket = rt.roundTrip(requestPacket);
-        if(responsePacket.getError() != null) {
+        if(!responsePacket.isSuccess()) {
             throw responsePacket.getError();
         }
         // 传输层收到的 payload，再经结果序列化层解码为 ExecutionResult
-        return ExecutionResultCodec.decode(responsePacket.getData());
+        return ExecutionResultCodec.decode(responsePacket.getPayload());
     }
 
     public void close() {

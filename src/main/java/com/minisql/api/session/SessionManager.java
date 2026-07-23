@@ -8,11 +8,9 @@ import com.minisql.api.config.MiniSqlConfig;
 import com.minisql.api.exception.SessionNotFoundException;
 
 import java.io.IOException;
-import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 
 /**
@@ -48,7 +46,6 @@ public class SessionManager implements DisposableBean {
         if (managed == null) {
             throw new SessionNotFoundException(sessionId);
         }
-        managed.touch();
         return managed.session;
     }
 
@@ -82,15 +79,9 @@ public class SessionManager implements DisposableBean {
 
     private static final class ManagedSession {
         private final MiniSqlSession session;
-        private final Instant createdAt = Instant.now();
-        private final AtomicLong lastAccessTs = new AtomicLong(createdAt.toEpochMilli());
 
         private ManagedSession(MiniSqlSession session) {
             this.session = session;
-        }
-
-        private void touch() {
-            lastAccessTs.set(System.currentTimeMillis());
         }
     }
 }

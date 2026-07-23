@@ -3,12 +3,12 @@ package com.minisql.api.service;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import com.minisql.common.ConsoleResultFormatter;
-import com.minisql.common.ExecutionResult;
-import com.minisql.common.ResultFormatter;
-import com.minisql.api.entity.enums.ResponseFormat;
-import com.minisql.api.entity.SqlExecutionResultDto;
-import com.minisql.api.entity.response.SqlExecutionResponse;
+import com.minisql.result.format.ConsoleResultFormatter;
+import com.minisql.result.ExecutionResult;
+import com.minisql.result.format.ResultFormatter;
+import com.minisql.api.dto.ResponseFormat;
+import com.minisql.api.dto.SqlExecutionResultDto;
+import com.minisql.api.dto.response.SqlExecutionResponse;
 import com.minisql.api.session.MiniSqlSession;
 import com.minisql.api.session.SessionManager;
 
