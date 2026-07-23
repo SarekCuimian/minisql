@@ -1,11 +1,7 @@
 package com.minisql.engine.transaction.mvcc;
 
-import java.util.Arrays;
-
-import com.google.common.primitives.Bytes;
-
-import com.minisql.engine.cache.SubArray;
-import com.minisql.engine.storage.record.DataItem;
+import com.minisql.engine.storage.codec.ByteSlice;
+import com.minisql.engine.storage.record.PageRecord;
 import com.minisql.engine.storage.codec.ByteUtil;
 
 /**
@@ -13,108 +9,111 @@ import com.minisql.engine.storage.codec.ByteUtil;
  * entry结构：
  * [XMIN] [XMAX] [getBytes]
  */
-public class Entry {
+public class Entry implements AutoCloseable {
 
-    private static final int OF_XMIN = 0;
-    private static final int OF_XMAX = OF_XMIN + 8;
-    private static final int OF_DATA = OF_XMAX + 8;
+    private static final int XMIN_OFFSET = 0;
+    private static final int XMAX_OFFSET = XMIN_OFFSET + Long.BYTES;
+    private static final int PAYLOAD_OFFSET = XMAX_OFFSET + Long.BYTES;
 
-    private long uid;
-    private DataItem dataItem;
-    private VersionManager vm;
-
-    public static Entry newEntry(VersionManager vm, DataItem dataItem, long uid) {
-        if (dataItem == null) {
-            return null;
-        }
-        Entry entry = new Entry();
-        entry.uid = uid;
-        entry.dataItem = dataItem;
-        entry.vm = vm;
-        return entry;
-    }
-
-    public static Entry loadEntry(VersionManager vm, long uid) throws Exception {
-        DataItem di = ((VersionManagerImpl)vm).dm.read(uid);
-        return newEntry(vm, di, uid);
+    private final long uid;
+    private final PageRecord record;
+    public Entry(PageRecord record, long uid) {
+        this.uid = uid;
+        this.record = record;
     }
 
     /**
-     * entry结构：
-     * [XMIN] [XMAX] [getBytes]
+     * 根据 XID 与业务 payload 创建完整 Entry bytes。
+     * Entry 布局为 {@code [XMIN][XMAX][Payload]}。
      */
-    public static byte[] wrapEntryRaw(long xid, byte[] data) {
-        byte[] xmin = ByteUtil.longToByte(xid);
-        byte[] xmax = new byte[8];
-        return Bytes.concat(xmin, xmax, data);
+    public static byte[] newEntryBytes(long xid, byte[] payload) {
+        byte[] entryBytes = new byte[PAYLOAD_OFFSET + payload.length];
+        ByteUtil.putLong(entryBytes, XMIN_OFFSET, xid);
+        System.arraycopy(payload, 0, entryBytes, PAYLOAD_OFFSET, payload.length);
+        return entryBytes;
     }
 
-    public void release() {
-        ((VersionManagerImpl)vm).releaseEntry(this);
+    @Override
+    public void close() {
+        record.close();
     }
 
-    public void releaseDataItem() {
-        dataItem.release();
-    }
-
-    // 以拷贝的形式返回内容
-    public byte[] getData() {
-        dataItem.rLock();
+    /** 以拷贝形式读取 Entry 的业务 payload。 */
+    public byte[] readPayload() {
+        record.rLock();
         try {
-            SubArray sa = dataItem.data();
-            byte[] data = new byte[sa.end - sa.start - OF_DATA];
-            System.arraycopy(sa.raw, sa.start+OF_DATA, data, 0, data.length);
-            return data;
+            ByteSlice entryBytes = record.payload();
+            byte[] payload = new byte[entryBytes.length() - PAYLOAD_OFFSET];
+            System.arraycopy(
+                    entryBytes.bytes(),
+                    entryBytes.offset() + PAYLOAD_OFFSET,
+                    payload,
+                    0,
+                    payload.length
+            );
+            return payload;
         } finally {
-            dataItem.rUnLock();
+            record.rUnlock();
         }
     }
 
     /**
-     * 覆盖写入数据区（保持 xmin/xmax 不变）。
-     * 仅支持新数据长度与原数据长度一致的场景。
+     * 覆盖写入业务 payload（保持 XMIN/XMAX 不变）。
+     * 仅支持新 payload 长度与原 payload 长度一致的场景。
      */
-    public void setData(byte[] data, long xid) {
-        dataItem.before();
+    public void replacePayload(byte[] payload, long xid) {
+        record.startUpdate();
+        boolean updated = false;
         try {
-            SubArray sa = dataItem.data();
-            int bodyLen = sa.end - (sa.start + OF_DATA);
-            if(bodyLen != data.length) {
+            ByteSlice entryBytes = record.payload();
+            int payloadLength = entryBytes.length() - PAYLOAD_OFFSET;
+            if(payloadLength != payload.length) {
                 throw new IllegalArgumentException("overwrite length mismatch");
             }
-            System.arraycopy(data, 0, sa.raw, sa.start + OF_DATA, data.length);
+            System.arraycopy(payload, 0, entryBytes.bytes(), entryBytes.offset() + PAYLOAD_OFFSET, payload.length);
+            updated = true;
         } finally {
-            dataItem.after(xid);
+            if (updated) {
+                record.finishUpdate(xid);
+            } else {
+                record.abortUpdate();
+            }
         }
     }
 
     public long getXmin() {
-        dataItem.rLock();
+        record.rLock();
         try {
-            SubArray sa = dataItem.data();
-            return ByteUtil.parseLong(Arrays.copyOfRange(sa.raw, sa.start+OF_XMIN, sa.start+OF_XMAX));
+            ByteSlice entryBytes = record.payload();
+            return ByteUtil.getLong(entryBytes.bytes(), entryBytes.offset() + XMIN_OFFSET);
         } finally {
-            dataItem.rUnLock();
+            record.rUnlock();
         }
     }
 
     public long getXmax() {
-        dataItem.rLock();
+        record.rLock();
         try {
-            SubArray sa = dataItem.data();
-            return ByteUtil.parseLong(Arrays.copyOfRange(sa.raw, sa.start+OF_XMAX, sa.start+OF_DATA));
+            ByteSlice entryBytes = record.payload();
+            return ByteUtil.getLong(entryBytes.bytes(), entryBytes.offset() + XMAX_OFFSET);
         } finally {
-            dataItem.rUnLock();
+            record.rUnlock();
         }
     }
 
-    public void setXmax(long xid) {
-        dataItem.before();
+    public void markDeleted(long xid) {
+        record.startUpdate();
+        boolean updated = false;
         try {
-            SubArray sa = dataItem.data();
-            System.arraycopy(ByteUtil.longToByte(xid), 0, sa.raw, sa.start+OF_XMAX, 8);
+            ByteSlice entryBytes = record.payload();
+            ByteUtil.putLong(entryBytes.bytes(), entryBytes.offset() + XMAX_OFFSET, xid);
+            updated = true;
         } finally {
-            dataItem.after(xid);
+            if (updated) {
+                record.finishUpdate(xid);
+            } else {
+                record.abortUpdate();
+            }
         }
     }
 

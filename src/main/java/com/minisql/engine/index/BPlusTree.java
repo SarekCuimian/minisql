@@ -1,39 +1,40 @@
 package com.minisql.engine.index;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-import com.minisql.engine.cache.SubArray;
-import com.minisql.engine.storage.DataManager;
-import com.minisql.engine.storage.record.DataItem;
-import com.minisql.engine.index.Node.InsertAndSplitRes;
-import com.minisql.engine.index.Node.LeafSearchRangeRes;
-import com.minisql.engine.index.Node.SearchNextRes;
+import com.minisql.engine.storage.codec.ByteSlice;
+import com.minisql.engine.storage.record.RecordManager;
+import com.minisql.engine.storage.record.PageRecord;
+import com.minisql.engine.index.Node.ChildLookupResult;
+import com.minisql.engine.index.Node.InsertResult;
+import com.minisql.engine.index.Node.RangeSearchResult;
 import com.minisql.engine.transaction.status.TransactionManagerImpl;
 import com.minisql.engine.storage.codec.ByteUtil;
 
 public class BPlusTree {
-    DataManager dm;
+    RecordManager recordManager;
     long bootUid;
-    DataItem bootDataItem;
+    PageRecord bootRecord;
     Lock bootLock;
 
-    public static long create(DataManager dm) throws Exception {
-        byte[] rawRoot = Node.newNilRootRaw();
-        long rootUid = dm.insert(TransactionManagerImpl.SUPER_XID, rawRoot);
-        return dm.insert(TransactionManagerImpl.SUPER_XID, ByteUtil.longToByte(rootUid));
+    public static long create(RecordManager recordManager) throws Exception {
+        byte[] rootBytes = Node.newEmptyRootBytes();
+        long rootUid = recordManager.insert(TransactionManagerImpl.SUPER_XID, rootBytes);
+        byte[] rootPointer = new byte[Long.BYTES];
+        ByteUtil.putLong(rootPointer, 0, rootUid);
+        return recordManager.insert(TransactionManagerImpl.SUPER_XID, rootPointer);
     }
 
-    public static BPlusTree load(long bootUid, DataManager dm) throws Exception {
-        DataItem bootDataItem = dm.read(bootUid);
-        assert bootDataItem != null;
+    public static BPlusTree load(long bootUid, RecordManager recordManager) throws Exception {
+        PageRecord bootRecord = recordManager.acquire(bootUid);
+        assert bootRecord != null;
         BPlusTree t = new BPlusTree();
         t.bootUid = bootUid;
-        t.dm = dm;
-        t.bootDataItem = bootDataItem;
+        t.recordManager = recordManager;
+        t.bootRecord = bootRecord;
         t.bootLock = new ReentrantLock();
         return t;
     }
@@ -41,22 +42,22 @@ public class BPlusTree {
     private long rootUid() {
         bootLock.lock();
         try {
-            SubArray sa = bootDataItem.data();
-            return ByteUtil.parseLong(Arrays.copyOfRange(sa.raw, sa.start, sa.start+8));
+            ByteSlice payload = bootRecord.payload();
+            return ByteUtil.getLong(payload.bytes(), payload.offset());
         } finally {
             bootLock.unlock();
         }
     }
 
-    private void updateRootUid(long left, long right, long rightKey) throws Exception {
+    private void updateRootUid(long leftUid, long rightUid, long separatorKey) throws Exception {
         bootLock.lock();
         try {
-            byte[] rootRaw = Node.newRootRaw(left, right, rightKey);
-            long newRootUid = dm.insert(TransactionManagerImpl.SUPER_XID, rootRaw);
-            bootDataItem.before();
-            SubArray diRaw = bootDataItem.data();
-            System.arraycopy(ByteUtil.longToByte(newRootUid), 0, diRaw.raw, diRaw.start, 8);
-            bootDataItem.after(TransactionManagerImpl.SUPER_XID);
+            byte[] rootBytes = Node.newRootBytes(leftUid, rightUid, separatorKey);
+            long newRootUid = recordManager.insert(TransactionManagerImpl.SUPER_XID, rootBytes);
+            bootRecord.startUpdate();
+            ByteSlice payload = bootRecord.payload();
+            ByteUtil.putLong(payload.bytes(), payload.offset(), newRootUid);
+            bootRecord.finishUpdate(TransactionManagerImpl.SUPER_XID);
         } finally {
             bootLock.unlock();
         }
@@ -69,14 +70,15 @@ public class BPlusTree {
      * @return 叶子节点的 uid
      */
     private long searchLeaf(long nodeUid, long key) throws Exception {
-        Node node = Node.loadNode(this, nodeUid);
-        boolean isLeaf = node.isLeaf();
-        node.release();
+        boolean isLeaf;
+        try (Node node = Node.load(this, nodeUid)) {
+            isLeaf = node.isLeaf();
+        }
 
         if(isLeaf) {
             return nodeUid;
         } else {
-            long next = searchNext(nodeUid, key);
+            long next = lookupChild(nodeUid, key);
             return searchLeaf(next, key);
         }
     }
@@ -87,13 +89,14 @@ public class BPlusTree {
      * @param key 要查找的 key
      * @return 找到的节点 uid
      */
-    private long searchNext(long nodeUid, long key) throws Exception {
+    private long lookupChild(long nodeUid, long key) throws Exception {
         while(true) {
-            Node node = Node.loadNode(this, nodeUid);
-            SearchNextRes res = node.searchNext(key);
-            node.release();
-            if(res.uid != 0) return res.uid;
-            nodeUid = res.siblingUid;
+            ChildLookupResult result;
+            try (Node node = Node.load(this, nodeUid)) {
+                result = node.lookupChild(key);
+            }
+            if(result.childUid != 0) return result.childUid;
+            nodeUid = result.siblingUid;
         }
     }
 
@@ -117,14 +120,15 @@ public class BPlusTree {
         long leafUid = searchLeaf(rootUid, leftKey);
         List<Long> uids = new ArrayList<>();
         while(true) {
-            Node leaf = Node.loadNode(this, leafUid);
-            LeafSearchRangeRes res = leaf.leafSearchRange(leftKey, rightKey);
-            leaf.release();
-            uids.addAll(res.uids);
-            if(res.siblingUid == 0) {
+            RangeSearchResult result;
+            try (Node leaf = Node.load(this, leafUid)) {
+                result = leaf.searchRange(leftKey, rightKey);
+            }
+            uids.addAll(result.uids);
+            if(result.siblingUid == 0) {
                 break;
             } else {
-                leafUid = res.siblingUid;
+                leafUid = result.siblingUid;
             }
         }
         return uids;
@@ -132,54 +136,75 @@ public class BPlusTree {
 
     public void insert(long key, long uid) throws Exception {
         long rootUid = rootUid();
-        InsertRes res = insert(rootUid, uid, key);
-        assert res != null;
-        if(res.newNode != 0) {
-            updateRootUid(rootUid, res.newNode, res.newKey);
+        SplitPropagationResult result = insert(rootUid, uid, key);
+        if(result.rightNodeUid != 0) {
+            updateRootUid(rootUid, result.rightNodeUid, result.separatorKey);
         }
     }
 
-    static class InsertRes {
-        long newNode, newKey;
-    }
+    private SplitPropagationResult insert(long nodeUid, long uid, long key) throws Exception {
+        boolean isLeaf;
+        try (Node node = Node.load(this, nodeUid)) {
+            isLeaf = node.isLeaf();
+        }
 
-    private InsertRes insert(long nodeUid, long uid, long key) throws Exception {
-        Node node = Node.loadNode(this, nodeUid);
-        boolean isLeaf = node.isLeaf();
-        node.release();
-
-        InsertRes res = null;
         if(isLeaf) {
-            res = insertAndSplit(nodeUid, uid, key);
-        } else {
-            long next = searchNext(nodeUid, key);
-            InsertRes ir = insert(next, uid, key);
-            if(ir.newNode != 0) {
-                res = insertAndSplit(nodeUid, ir.newNode, ir.newKey);
-            } else {
-                res = new InsertRes();
-            }
+            return insertAndSplit(nodeUid, uid, key);
         }
-        return res;
+
+        long childUid = lookupChild(nodeUid, key);
+        SplitPropagationResult childResult = insert(childUid, uid, key);
+        if(childResult.rightNodeUid == 0) {
+            return SplitPropagationResult.noSplit();
+        }
+        return insertAndSplit(
+                nodeUid,
+                childResult.rightNodeUid,
+                childResult.separatorKey
+        );
     }
 
-    private InsertRes insertAndSplit(long nodeUid, long uid, long key) throws Exception {
+    private SplitPropagationResult insertAndSplit(long nodeUid, long uid, long key) throws Exception {
         while(true) {
-            Node node = Node.loadNode(this, nodeUid);
-            InsertAndSplitRes iasr = node.insertAndSplit(uid, key);
-            node.release();
-            if(iasr.siblingUid != 0) {
-                nodeUid = iasr.siblingUid;
-            } else {
-                InsertRes res = new InsertRes();
-                res.newNode = iasr.newSon;
-                res.newKey = iasr.newKey;
-                return res;
+            InsertResult result;
+            try (Node node = Node.load(this, nodeUid)) {
+                result = node.insertAndSplit(uid, key);
             }
+            if(result.siblingUid != 0) {
+                nodeUid = result.siblingUid;
+                continue;
+            }
+            return result.rightNodeUid == 0
+                    ? SplitPropagationResult.noSplit()
+                    : SplitPropagationResult.split(result.rightNodeUid, result.separatorKey);
         }
     }
 
     public void close() {
-        bootDataItem.release();
+        bootRecord.close();
+    }
+
+    /**
+     * 递归插入结束后，child split 向父 Node 传播的数据。
+     * rightNodeUid 为 0 表示当前子树未发生需要向上传播的 split。
+     */
+    private static final class SplitPropagationResult {
+        /** split 新建的右侧 Node UID；0 表示无需向上传播。 */
+        final long rightNodeUid;
+        /** 父 Node 连接左右 child 时写入的 separator key。 */
+        final long separatorKey;
+
+        private SplitPropagationResult(long rightNodeUid, long separatorKey) {
+            this.rightNodeUid = rightNodeUid;
+            this.separatorKey = separatorKey;
+        }
+
+        private static SplitPropagationResult noSplit() {
+            return new SplitPropagationResult(0, 0);
+        }
+
+        private static SplitPropagationResult split(long rightNodeUid, long separatorKey) {
+            return new SplitPropagationResult(rightNodeUid, separatorKey);
+        }
     }
 }

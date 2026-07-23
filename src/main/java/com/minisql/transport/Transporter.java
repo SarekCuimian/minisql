@@ -2,12 +2,12 @@ package com.minisql.transport;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.Socket;
 
-import org.apache.commons.codec.DecoderException;
 import org.apache.commons.codec.binary.Hex;
 
 public class Transporter {
@@ -21,18 +21,20 @@ public class Transporter {
         this.writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
     }
 
-    public void send(byte[] data) throws Exception {
-        String raw = hexEncode(data);
-        writer.write(raw);
+    public void send(byte[] bytes) throws Exception {
+        String encodedLine = Hex.encodeHexString(bytes, true);
+        writer.write(encodedLine);
+        writer.newLine();
         writer.flush();
     }
 
     public byte[] receive() throws Exception {
-        String line = reader.readLine();
-        if(line == null) {
+        String encodedLine = reader.readLine();
+        if(encodedLine == null) {
             close();
+            throw new EOFException("peer closed the transport connection");
         }
-        return hexDecode(line);
+        return Hex.decodeHex(encodedLine);
     }
 
     public void close() throws IOException {
@@ -41,11 +43,4 @@ public class Transporter {
         socket.close();
     }
 
-    private String hexEncode(byte[] buf) {
-        return Hex.encodeHexString(buf, true)+"\n";
-    }
-
-    private byte[] hexDecode(String buf) throws DecoderException {
-        return Hex.decodeHex(buf);
-    }
 }

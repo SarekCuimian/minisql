@@ -1,6 +1,6 @@
 package com.minisql.engine.table;
 
-import com.minisql.engine.storage.DataManager;
+import com.minisql.engine.storage.record.RecordManager;
 import com.minisql.engine.sql.ast.statement.*;
 import com.minisql.engine.storage.codec.ByteUtil;
 import com.minisql.result.StatementResult;
@@ -8,7 +8,7 @@ import com.minisql.engine.transaction.mvcc.VersionManager;
 
 public interface TableManager {
     VersionManager getVersionManager();
-    DataManager getDataManager();
+    RecordManager getRecordManager();
 
     long begin(Begin begin);
     void commit(long xid) throws Exception;
@@ -30,24 +30,26 @@ public interface TableManager {
      * 创建一个表管理器
      * @param path 表管理器的路径
      * @param vm 版本管理器
-     * @param dm 数据管理器
+     * @param recordManager record 管理器
      * @return 表管理器
      */
-    public static TableManager create(String path, VersionManager vm, DataManager dm) {
+    public static TableManager create(String path, VersionManager vm, RecordManager recordManager) {
         Booter booter = Booter.create(path);
-        booter.update(ByteUtil.longToByte(0));
-        return new TableManagerImpl(vm, dm, booter);
+        byte[] firstTableUid = new byte[Long.BYTES];
+        ByteUtil.putLong(firstTableUid, 0, 0);
+        booter.update(firstTableUid);
+        return new TableManagerImpl(vm, recordManager, booter);
     }
 
     /**
      * 打开一个表管理器
      * @param path 表管理器的路径
      * @param vm 版本管理器
-     * @param dm 数据管理器
+     * @param recordManager record 管理器
      * @return 表管理器
      */
-    public static TableManager open(String path, VersionManager vm, DataManager dm) {
+    public static TableManager open(String path, VersionManager vm, RecordManager recordManager) {
         Booter booter = Booter.open(path);
-        return new TableManagerImpl(vm, dm, booter);
+        return new TableManagerImpl(vm, recordManager, booter);
     }
 }

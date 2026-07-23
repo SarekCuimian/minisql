@@ -1,6 +1,6 @@
 package com.minisql.engine.transaction.mvcc;
 
-import com.minisql.engine.storage.DataManager;
+import com.minisql.engine.storage.record.RecordManager;
 import com.minisql.engine.transaction.status.TransactionManager;
 
 public interface VersionManager {
@@ -12,9 +12,9 @@ public interface VersionManager {
 
     // 数据管理
     byte[] read(long xid, long uid) throws Exception;
-    long insert(long xid, byte[] data) throws Exception;
+    long insert(long xid, byte[] payload) throws Exception;
     boolean delete(long xid, long uid) throws Exception;
-    void update(long xid, long uid, byte[] data) throws Exception;
+    void update(long xid, long uid, byte[] payload) throws Exception;
 
     // 锁管理
     /**
@@ -30,8 +30,8 @@ public interface VersionManager {
      */
     LockManager getLockManager();
 
-    static VersionManager create(TransactionManager txm, DataManager dm) {
-        return new VersionManagerImpl(txm, dm);
+    static VersionManager create(TransactionManager txm, RecordManager recordManager) {
+        return new VersionManagerImpl(txm, recordManager);
     }
 
 }

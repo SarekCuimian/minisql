@@ -1,6 +1,5 @@
 package com.minisql.engine.table;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 
@@ -36,15 +35,15 @@ public class Field {
     private boolean primary;
     private BPlusTree tree;
 
-    public static Field loadField(Table tb, long uid) {
-        byte[] raw = null;
+    public static Field load(Table tb, long uid) {
+        byte[] fieldBytes = null;
         try {
-            raw = tb.vm.read(TransactionManagerImpl.SUPER_XID, uid);
+            fieldBytes = tb.vm.read(TransactionManagerImpl.SUPER_XID, uid);
         } catch (Exception e) {
             Panic.of(e);
         }
-        assert raw != null;
-        return new Field(uid, tb).parseSelf(raw);
+        assert fieldBytes != null;
+        return new Field(uid, tb).parse(fieldBytes);
     }
 
     public Field(long uid, Table tb) {
@@ -72,58 +71,61 @@ public class Field {
         }
         Field f = new Field(tb, fieldName, type, 0, unique, primary);
         if(indexed) {
-            long index = BPlusTree.create(tb.dm);
-            BPlusTree tree = BPlusTree.load(index, tb.dm);
+            long index = BPlusTree.create(tb.recordManager);
+            BPlusTree tree = BPlusTree.load(index, tb.recordManager);
             f.index = index;
             f.tree = tree;
         }
-        f.persistSelf(xid);
+        f.persist(xid);
         return f;
     }
 
-    private Field parseSelf(byte[] raw) {
+    /** 解析持久化的 Field metadata，并回填当前对象。 */
+    private Field parse(byte[] fieldBytes) {
         int position = 0;
-        ParsedValue parsed = ByteUtil.parseString(raw);
+        ParsedValue parsed = ByteUtil.decodeString(fieldBytes, position);
         fieldName = (String) parsed.value;
         position += parsed.size;
-        parsed = ByteUtil.parseString(Arrays.copyOfRange(raw, position, raw.length));
+        parsed = ByteUtil.decodeString(fieldBytes, position);
         try {
             fieldType = FieldType.from((String) parsed.value);
         } catch (Exception e) {
             Panic.of(e);
         }
         position += parsed.size;
-        this.index = ByteUtil.parseLong(Arrays.copyOfRange(raw, position, position + 8));
+        this.index = ByteUtil.getLong(fieldBytes, position);
         if(index != 0) {
             try {
-                tree = BPlusTree.load(index, tb.dm);
+                tree = BPlusTree.load(index, tb.recordManager);
             } catch(Exception e) {
                 Panic.of(e);
             }
         }
         position += 8;
-        if(position < raw.length) {
-            unique = raw[position] == (byte)1;
+        if(position < fieldBytes.length) {
+            unique = fieldBytes[position] == (byte)1;
             position += 1;
         } else {
             unique = false;
         }
-        if(position < raw.length) {
-            primary = raw[position] == (byte)1;
+        if(position < fieldBytes.length) {
+            primary = fieldBytes[position] == (byte)1;
         } else {
             primary = false;
         }
         return this;
     }
 
-    private void persistSelf(long xid) throws Exception {
-        byte[] nameRaw = ByteUtil.stringToByte(fieldName);
-        byte[] typeRaw = ByteUtil.stringToByte(fieldType.name().toLowerCase(Locale.ROOT));
-        byte[] indexRaw = ByteUtil.longToByte(index);
-        byte[] uniqueRaw = new byte[] {(byte)(unique?1:0)};
-        byte[] primaryRaw = new byte[] {(byte)(primary?1:0)};
+    /** 编码当前 Field metadata 并持久化到 VersionManager。 */
+    private void persist(long xid) throws Exception {
+        byte[] nameBytes = ByteUtil.encodeString(fieldName);
+        byte[] typeBytes = ByteUtil.encodeString(fieldType.name().toLowerCase(Locale.ROOT));
+        byte[] indexBytes = new byte[Long.BYTES];
+        ByteUtil.putLong(indexBytes, 0, index);
+        byte[] uniqueFlagBytes = new byte[] {(byte)(unique ? 1 : 0)};
+        byte[] primaryFlagBytes = new byte[] {(byte)(primary ? 1 : 0)};
         this.uid = tb.vm
-                .insert(xid, Bytes.concat(nameRaw, typeRaw, indexRaw, uniqueRaw, primaryRaw));
+                .insert(xid, Bytes.concat(nameBytes, typeBytes, indexBytes, uniqueFlagBytes, primaryFlagBytes));
     }
 
     public boolean isIndexed() {
@@ -162,8 +164,8 @@ public class Field {
             if(selfUid != null && selfUid.equals(uid)) {
                 continue;
             }
-            byte[] raw = tm.vm.read(xid, uid);
-            if(raw != null) {
+            byte[] recordBytes = tm.vm.read(xid, uid);
+            if(recordBytes != null) {
                 throw Error.DuplicatedEntryException;
             }
         }
@@ -174,7 +176,7 @@ public class Field {
         tree.insert(key, uid);
     }
 
-    public List<Long> search(long left, long right) throws Exception {
+    public List<Long> searchRange(long left, long right) throws Exception {
         return tree.searchRange(left, right);
     }
 
@@ -217,37 +219,40 @@ public class Field {
         return res;
     }
 
-    public byte[] toRaw(Object value) {
-        byte[] raw = null;
+    /** 将字段值编码为存入行记录的 value bytes。 */
+    public byte[] encodeValue(Object value) {
+        byte[] valueBytes = null;
         switch(fieldType) {
             case INT32:
-                raw = ByteUtil.intToByte((int)value);
+                valueBytes = new byte[Integer.BYTES];
+                ByteUtil.putInt(valueBytes, 0, (int) value);
                 break;
             case INT64:
-                raw = ByteUtil.longToByte((long)value);
+                valueBytes = new byte[Long.BYTES];
+                ByteUtil.putLong(valueBytes, 0, (long) value);
                 break;
             case STRING:
-                raw = ByteUtil.stringToByte((String)value);
+                valueBytes = ByteUtil.encodeString((String)value);
                 break;
         }
-        return raw;
+        return valueBytes;
     }
 
-    // raw [len][data] 
-    public ParsedValue parseValue(byte[] raw) {
+    /** 解析字段的 value bytes；字符串布局为 {@code [Length][Data]}。 */
+    public ParsedValue parseValue(byte[] valueBytes, int offset) {
         Object value = null;
         int size = 0;
         switch(fieldType) {
             case INT32:
-                value = ByteUtil.parseInt(Arrays.copyOf(raw, 4));
+                value = ByteUtil.getInt(valueBytes, offset);
                 size = 4;
                 break;
             case INT64:
-                value = ByteUtil.parseLong(Arrays.copyOf(raw, 8));
+                value = ByteUtil.getLong(valueBytes, offset);
                 size = 8;
                 break;
             case STRING:
-                return ByteUtil.parseString(raw);
+                return ByteUtil.decodeString(valueBytes, offset);
         }
         return new ParsedValue(value, size);
     }

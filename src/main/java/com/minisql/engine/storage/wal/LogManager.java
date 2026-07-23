@@ -2,8 +2,8 @@ package com.minisql.engine.storage.wal;
 
 public interface LogManager extends AutoCloseable {
 
-    int POS_START = 0;
-    int POS_END = 1;
+    int START_LSN_INDEX = 0;
+    int END_LSN_INDEX = 1;
     
     long[] log(byte[] payload);
 

@@ -12,7 +12,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
-import com.minisql.engine.storage.DataManager;
+import com.minisql.engine.storage.record.RecordManager;
 import com.minisql.engine.table.TableManager;
 import com.minisql.engine.transaction.status.TransactionManager;
 import com.minisql.error.Panic;
@@ -70,11 +70,11 @@ public class DatabaseManager {
         Files.createDirectories(dir);
         String basePath = databaseBasePath(name);
         TransactionManager txm = TransactionManager.create(basePath);
-        DataManager dm = DataManager.create(basePath, mem, txm);
-        VersionManager vm = VersionManager.create(txm, dm);
-        TableManager.create(basePath, vm, dm);
+        RecordManager recordManager = RecordManager.create(basePath, mem, txm);
+        VersionManager vm = VersionManager.create(txm, recordManager);
+        TableManager.create(basePath, vm, recordManager);
         txm.close();
-        dm.close();
+        recordManager.close();
     }
 
     /**
@@ -134,8 +134,8 @@ public class DatabaseManager {
             return Collections.emptyList();
         }
         List<String> names = new ArrayList<>();
-        try {
-            Files.list(root).forEach(path -> {
+        try (Stream<Path> paths = Files.list(root)) {
+            paths.forEach(path -> {
                 if(Files.isDirectory(path)) {
                     String name = path.getFileName().toString();
                     if(Files.exists(path.resolve(name + ".xid"))) {
@@ -170,10 +170,10 @@ public class DatabaseManager {
         String basePath = databaseBasePath(name);
         try {
             TransactionManager txm = TransactionManager.open(basePath);
-            DataManager dm = DataManager.open(basePath, mem, txm);
-            VersionManager vm = new VersionManagerImpl(txm, dm);
-            TableManager tbm = TableManager.open(basePath, vm, dm);
-            return new DatabaseContext(name, txm, dm, tbm);
+            RecordManager recordManager = RecordManager.open(basePath, mem, txm);
+            VersionManager vm = new VersionManagerImpl(txm, recordManager);
+            TableManager tbm = TableManager.open(basePath, vm, recordManager);
+            return new DatabaseContext(name, txm, recordManager, tbm);
         } catch (Exception e) {
             LOGGER.error("Failed to open database '{}' at {}: {}", name, basePath, e.getMessage(), e);
             throw e;

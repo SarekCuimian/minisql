@@ -6,7 +6,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.minisql.engine.storage.page.PageCache;
 
-public class PageImpl implements Page {
+public class CachedPage implements Page {
     
     private final int pageNumber;
     
@@ -22,7 +22,7 @@ public class PageImpl implements Page {
     
     private final PageCache cache;
 
-    public PageImpl(int pageNumber, byte[] bytes, PageCache pageCache) {
+    public CachedPage(int pageNumber, byte[] bytes, PageCache pageCache) {
         this.pageNumber = pageNumber;
         this.bytes = bytes;
         this.cache = pageCache;

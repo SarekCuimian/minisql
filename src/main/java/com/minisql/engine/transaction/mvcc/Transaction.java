@@ -9,13 +9,11 @@ import com.minisql.engine.transaction.status.TransactionManagerImpl;
 public class Transaction {
     public long xid;
     public IsolationLevel level;
-    /**
-     * 事务开始时仍然活跃的其他事务 ID
-     */
+    /** 事务开始时仍然活跃的其他事务 ID */
     public Map<Long, Boolean> activeSnapshot;
-    public Exception err;
+    public Exception error;
     public boolean autoAborted;
-    public volatile boolean terminated = false;  // ← 新增：事务终止标志
+    public volatile boolean terminated = false;  // 新增：事务终止标志
 
     private Transaction() {}
 

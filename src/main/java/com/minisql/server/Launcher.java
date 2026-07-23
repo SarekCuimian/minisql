@@ -13,9 +13,9 @@ import com.minisql.error.Error;
 
 public class Launcher {
 
-    public static final int port = 9999;
+    public static final int DEFAULT_PORT = 9999;
 
-    public static final long DEFAULT_MEM = (1<<20)*64;
+    public static final long DEFAULT_MEMORY_BYTES = (1 << 20) * 64;
     public static final long KB = 1 << 10;
 	public static final long MB = 1 << 20;
 	public static final long GB = 1 << 30;
@@ -45,7 +45,7 @@ public class Launcher {
     }
 
     private static void createDB(String path) {
-        DatabaseManager dbm = new DatabaseManager(path, DEFAULT_MEM);
+        DatabaseManager dbm = new DatabaseManager(path, DEFAULT_MEMORY_BYTES);
         dbm.createDefault();
         dbm.shutdown();
     }
@@ -53,20 +53,20 @@ public class Launcher {
     private static void openDB(String path, long mem) {
         DatabaseManager dbm = new DatabaseManager(path, mem);
         dbm.createDefault();
-        Server server = new Server(port, dbm);
+        Server server = new Server(DEFAULT_PORT, dbm);
         Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
         server.start();
     }
 
     private static void shutdownDB(String path) {
-        DatabaseManager dbm = new DatabaseManager(path, DEFAULT_MEM);
+        DatabaseManager dbm = new DatabaseManager(path, DEFAULT_MEMORY_BYTES);
         dbm.shutdown();
         System.out.println("Database resources under " + path + " have been closed.");
     }
 
     private static long parseMem(String memStr) {
         if(memStr == null || memStr.isEmpty()) {
-            return DEFAULT_MEM;
+            return DEFAULT_MEMORY_BYTES;
         }
         if(memStr.length() < 2) {
             Panic.of(Error.InvalidMemException);
@@ -83,6 +83,6 @@ public class Launcher {
             default:
                 Panic.of(Error.InvalidMemException);
         }
-        return DEFAULT_MEM;
+        return DEFAULT_MEMORY_BYTES;
     }
 }

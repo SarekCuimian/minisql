@@ -7,24 +7,23 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-import com.minisql.engine.cache.AbstractCache;
-import com.minisql.engine.storage.DataManager;
+import com.minisql.engine.storage.record.RecordManager;
+import com.minisql.engine.storage.record.PageRecord;
 import com.minisql.engine.transaction.status.TransactionManager;
 import com.minisql.engine.transaction.status.TransactionManagerImpl;
 import com.minisql.error.Error;
 
-public class VersionManagerImpl extends AbstractCache<Entry> implements VersionManager {
+public class VersionManagerImpl implements VersionManager {
 
     TransactionManager txm;
-    DataManager dm;
+    RecordManager recordManager;
     Map<Long, Transaction> activeTransactionMap;
     Lock lock;
     LockManager lockManager;
 
-    public VersionManagerImpl(TransactionManager txm, DataManager dm) {
-        super(0);
+    public VersionManagerImpl(TransactionManager txm, RecordManager recordManager) {
         this.txm = txm;
-        this.dm = dm;
+        this.recordManager = recordManager;
         this.activeTransactionMap = new HashMap<>();
         // 创建超级事务 xid = 0
         activeTransactionMap.put(
@@ -46,11 +45,11 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
         Transaction tx = activeTransactionMap.get(xid);
         lock.unlock();
         if(tx == null) throw Error.NoTransactionException;
-        if(tx.err != null) throw tx.err;
+        if(tx.error != null) throw tx.error;
 
         Entry entry = null;
         try {
-            entry = super.get(uid);
+            entry = loadEntry(uid);
         } catch(Exception e) {
             if(e == Error.NullEntryException) {
                 return null;
@@ -60,25 +59,25 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
         }
         try {
             if(Visibility.isVisible(txm, tx, entry)) {
-                return entry.getData();
+                return entry.readPayload();
             } else {
                 return null;
             }
         } finally {
-            entry.release();
+            entry.close();
         }
     }
 
     @Override
-    public long insert(long xid, byte[] data) throws Exception {
+    public long insert(long xid, byte[] payload) throws Exception {
         lock.lock();
         Transaction tx = activeTransactionMap.get(xid);
         lock.unlock();
         if(tx == null) throw Error.NoTransactionException;
-        if(tx.err != null) throw tx.err;
+        if(tx.error != null) throw tx.error;
 
-        byte[] raw = Entry.wrapEntryRaw(xid, data);
-        return dm.insert(xid, raw);
+        byte[] entryBytes = Entry.newEntryBytes(xid, payload);
+        return recordManager.insert(xid, entryBytes);
     }
 
     @Override
@@ -87,11 +86,11 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
         Transaction tx = activeTransactionMap.get(xid);
         lock.unlock();
         if(tx == null) throw Error.NoTransactionException;
-        if(tx.err != null) throw tx.err;
+        if(tx.error != null) throw tx.error;
 
         Entry entry = null;
         try {
-            entry = super.get(uid);
+            entry = loadEntry(uid);
         } catch(Exception e) {
             if(e == Error.NullEntryException) return false;
             else throw e;
@@ -115,17 +114,17 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
 
             // 发生了并发更新冲突，内部主动回滚
             if(Visibility.isVersionSkip(txm, tx, entry)) {
-                tx.err = Error.ConcurrentUpdateException;
+                tx.error = Error.ConcurrentUpdateException;
                 internalAbort(xid, true);
                 tx.autoAborted = true;
-                throw tx.err;
+                throw tx.error;
             }
             // 设置 xmax 实现逻辑删除
-            entry.setXmax(xid);
+            entry.markDeleted(xid);
             return true;
 
         } finally {
-            entry.release();
+            entry.close();
         }
     }
     
@@ -133,19 +132,19 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
      * 仅用来更新表前后指针
      */
     @Override
-    public void update(long xid, long uid, byte[] data) throws Exception {
+    public void update(long xid, long uid, byte[] payload) throws Exception {
         lock.lock();
         Transaction tx = activeTransactionMap.get(xid);
         lock.unlock();
         if(tx == null) throw Error.NoTransactionException;
-        if(tx.err != null) throw tx.err;
+        if(tx.error != null) throw tx.error;
 
         Entry entry = null;
-        entry = super.get(uid);
+        entry = loadEntry(uid);
         try {
-            entry.setData(data, xid);
+            entry.replacePayload(payload, xid);
         } finally {
-            entry.release();
+            entry.close();
         }
     }
 
@@ -155,11 +154,11 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
         Transaction tx = activeTransactionMap.get(xid);
         lock.unlock();
         if(tx == null) throw Error.NoTransactionException;
-        if(tx.err != null) throw tx.err;
+        if(tx.error != null) throw tx.error;
 
         Entry entry = null;
         try {
-            entry = super.get(uid);
+            entry = loadEntry(uid);
         } catch(Exception e) {
             if(e == Error.NullEntryException) return null;
             else throw e;
@@ -175,9 +174,9 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
                 return null;
             }
 
-            return entry.getData();
+            return entry.readPayload();
         } finally {
-            entry.release();
+            entry.close();
         }
     }
 
@@ -210,7 +209,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
         try {
             tx = activeTransactionMap.get(xid);
             if (tx == null) throw Error.NoTransactionException;
-            if (tx.err != null) throw tx.err;
+            if (tx.error != null) throw tx.error;
             tx.terminated = true;
             activeTransactionMap.remove(xid);
         } finally {
@@ -218,7 +217,7 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
         }
         lockManager.clear(xid);
         long lsn = txm.getLastLsn(xid);
-        dm.flushLog(lsn);
+        recordManager.flushLog(lsn);
         txm.commit(xid);
     }
 
@@ -245,22 +244,12 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
     }
 
 
-    public void releaseEntry(Entry entry) {
-        super.release(entry.getUid());
-    }
-
-    @Override
-    protected Entry loadCache(long uid) throws Exception {
-        Entry entry = Entry.loadEntry(this, uid);
-        if(entry == null) {
+    private Entry loadEntry(long uid) throws Exception {
+        PageRecord record = recordManager.acquire(uid);
+        if(record == null) {
             throw Error.NullEntryException;
         }
-        return entry;
-    }
-
-    @Override
-    protected void flushCache(Entry entry) {
-        entry.releaseDataItem();
+        return new Entry(record, uid);
     }
     
     /**
@@ -273,28 +262,28 @@ public class VersionManagerImpl extends AbstractCache<Entry> implements VersionM
             latch = lockManager.acquire(xid, uid);
         } catch(Exception e) {
             // 死锁等情况
-            tx.err = Error.ConcurrentUpdateException;
+            tx.error = Error.ConcurrentUpdateException;
             internalAbort(xid, true);
             tx.autoAborted = true;
-            throw tx.err;
+            throw tx.error;
         }
 
         // 等待前检查，防止死事务去等锁
         if (tx.terminated) {
-            throw tx.err != null ? tx.err : Error.TransactionTerminatedException;
+            throw tx.error != null ? tx.error : Error.TransactionTerminatedException;
         }
         // 需要等待，阻塞在这里，直到别的事务把资源让给我
         if (latch != null) {
             boolean acquired = latch.await(30, TimeUnit.SECONDS);
             // await 返回后第一时间检查，有可能是锁等待超时异常或事务被终止异常
             if (tx.terminated) {
-                throw tx.err != null ? tx.err : Error.TransactionTerminatedException;
+                throw tx.error != null ? tx.error : Error.TransactionTerminatedException;
             }
             if (!acquired) {
-                tx.err = Error.LockWaitTimeoutException;
+                tx.error = Error.LockWaitTimeoutException;
                 internalAbort(xid, true);
                 tx.autoAborted = true;
-                throw tx.err;
+                throw tx.error;
             }
         }
     }

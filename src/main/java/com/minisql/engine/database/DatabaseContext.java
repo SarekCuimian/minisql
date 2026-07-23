@@ -2,7 +2,7 @@ package com.minisql.engine.database;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
-import com.minisql.engine.storage.DataManager;
+import com.minisql.engine.storage.record.RecordManager;
 import com.minisql.engine.table.TableManager;
 import com.minisql.engine.transaction.status.TransactionManager;
 
@@ -14,16 +14,16 @@ public class DatabaseContext {
 
     private final String name;
     private final TransactionManager txm;
-    private final DataManager dm;
+    private final RecordManager recordManager;
     private final TableManager tbm;
 
     /** 当前有多少个 Executor 持有这个上下文（连接/会话等） */
     private final AtomicInteger refCount = new AtomicInteger(0);
 
-    DatabaseContext(String name, TransactionManager txm, DataManager dm, TableManager tbm) {
+    DatabaseContext(String name, TransactionManager txm, RecordManager recordManager, TableManager tbm) {
         this.name = name;
         this.txm = txm;
-        this.dm = dm;
+        this.recordManager = recordManager;
         this.tbm = tbm;
     }
 
@@ -60,7 +60,7 @@ public class DatabaseContext {
      */
     public void close() {
         txm.close();
-        dm.close();
+        recordManager.close();
         // VersionManager 与 TableManager 没有显式 close，随 TM/DM 生命周期结束
     }
 }

@@ -11,7 +11,7 @@ import java.util.LinkedHashSet;
 
 import com.google.common.primitives.Bytes;
 
-import com.minisql.engine.storage.DataManager;
+import com.minisql.engine.storage.record.RecordManager;
 import com.minisql.engine.sql.ast.statement.Create;
 import com.minisql.engine.sql.ast.statement.Delete;
 import com.minisql.engine.sql.ast.statement.Insert;
@@ -67,7 +67,7 @@ public class Table {
 
     TableManager tbm;
     VersionManager vm;
-    DataManager dm;
+    RecordManager recordManager;
 
     // =========================================================
     // 静态工厂 / 加载方法
@@ -81,20 +81,19 @@ public class Table {
      * @return 反序列化后的 Table 实例
      * @throws RuntimeException 读取或解析失败时会触发 Panic.panic 包装后的运行时异常
      */
-    public static Table loadTable(TableManager tbm, long uid) {
-        byte[] raw = null;
+    public static Table load(TableManager tbm, long uid) {
+        byte[] tableBytes = null;
         try {
             // 使用超级事务 SUPER_XID 去加载数据表
-            // raw = vm.read(TransactionManagerImpl.SUPER_XID, uid);
-            raw = tbm.getVersionManager().read(TransactionManagerImpl.SUPER_XID, uid);
+            tableBytes = tbm.getVersionManager().read(TransactionManagerImpl.SUPER_XID, uid);
         } catch (Exception e) {
             Panic.of(e);
         }
-        if (raw == null) {
+        if (tableBytes == null) {
             throw new RuntimeException("Load table meta failed: vm.read returned null for uid " + uid);
         }
         Table tb = new Table(tbm, uid);
-        return tb.parseSelf(raw);
+        return tb.parse(tableBytes);
     }
 
     /**
@@ -143,7 +142,7 @@ public class Table {
             tb.fields.add(Field.createField(tb, xid, fieldName, fieldType, indexed, unique, primary));
         }
 
-        return tb.persistSelf(xid);
+        return tb.persist(xid);
     }
 
     // =========================================================
@@ -160,7 +159,7 @@ public class Table {
         this.uid = uid;
         this.tbm = tbm;
         this.vm = tbm.getVersionManager();
-        this.dm = tbm.getDataManager();
+        this.recordManager = tbm.getRecordManager();
     }
 
     /**
@@ -175,7 +174,7 @@ public class Table {
         this.name = tableName;
         this.nextUid = nextUid;
         this.vm = tbm.getVersionManager();
-        this.dm = tbm.getDataManager();
+        this.recordManager = tbm.getRecordManager();
     }
 
     // =========================================================
@@ -185,21 +184,21 @@ public class Table {
     /**
      * 解析持久化字节数组，回填本对象的 name、nextUid、fields。
      *
-     * @param raw 原始字节数据
+     * @param tableBytes 持久化的表元数据字节
      * @return 当前 Table 自身（便于链式调用）
      */
-    private Table parseSelf(byte[] raw) {
+    private Table parse(byte[] tableBytes) {
         int position = 0;
-        ParsedValue parsed = ByteUtil.parseString(raw);
+        ParsedValue parsed = ByteUtil.decodeString(tableBytes, position);
         name = (String) parsed.value;
         position += parsed.size;
-        nextUid = ByteUtil.parseLong(Arrays.copyOfRange(raw, position, position + 8));
+        nextUid = ByteUtil.getLong(tableBytes, position);
         position += 8;
 
-        while (position < raw.length) {
-            long uid = ByteUtil.parseLong(Arrays.copyOfRange(raw, position, position + 8));
+        while (position < tableBytes.length) {
+            long uid = ByteUtil.getLong(tableBytes, position);
             position += 8;
-            fields.add(Field.loadField(this, uid));
+            fields.add(Field.load(this, uid));
         }
         return this;
     }
@@ -211,14 +210,17 @@ public class Table {
      * @return 当前 Table 自身（已持久化并具有有效 uid）
      * @throws Exception VM 写入失败
      */
-    private Table persistSelf(long xid) throws Exception {
-        byte[] nameRaw = ByteUtil.stringToByte(name);
-        byte[] nextRaw = ByteUtil.longToByte(nextUid);
-        byte[] fieldRaw = new byte[0];
+    private Table persist(long xid) throws Exception {
+        byte[] nameBytes = ByteUtil.encodeString(name);
+        byte[] nextUidBytes = new byte[Long.BYTES];
+        ByteUtil.putLong(nextUidBytes, 0, nextUid);
+        byte[] fieldUidBytes = new byte[0];
         for (Field field : fields) {
-            fieldRaw = Bytes.concat(fieldRaw, ByteUtil.longToByte(field.uid));
+            byte[] fieldUid = new byte[Long.BYTES];
+            ByteUtil.putLong(fieldUid, 0, field.uid);
+            fieldUidBytes = Bytes.concat(fieldUidBytes, fieldUid);
         }
-        uid = vm.insert(xid, Bytes.concat(nameRaw, nextRaw, fieldRaw));
+        uid = vm.insert(xid, Bytes.concat(nameBytes, nextUidBytes, fieldUidBytes));
         return this;
     }
 
@@ -236,8 +238,8 @@ public class Table {
     public void insert(long xid, Insert insert) throws Exception {
         Map<String, Object> valueMap = getValueMap(insert.columns, insert.values);
         validateUniqueConstraints(xid, valueMap, null);
-        byte[] raw = serializeValueMap(valueMap);
-        long uid = vm.insert(xid, raw);
+        byte[] rowBytes = encodeRow(valueMap);
+        long uid = vm.insert(xid, rowBytes);
         for (Field field : fields) {
             if (field.isIndexed()) {
                 field.insert(valueMap.get(field.fieldName), uid);
@@ -321,16 +323,16 @@ public class Table {
         Object value = fd.stringToValue(update.value);
 
         int count = 0;
-        final int MAX_RETRY = 3;
+        final int MAX_UPDATE_RETRIES = 3;
 
-        // 预读：保存候选 uid 对应的主键值，用于“等待后旧版本不可见(raw==null)”时重定位最新版本
+        // 预读：保存候选 uid 对应的主键值，用于“等待后旧版本不可见(recordBytes==null)”时重定位最新版本
         // 主键不可更新，因此同一逻辑行的不同版本主键值一致。
         Map<Long, Object> uidPrimaryKeyMap = new HashMap<>();
         for (Long uid : uids) {
-            byte[] raw = vm.read(xid, uid);
-            if (raw == null)
+            byte[] recordBytes = vm.read(xid, uid);
+            if (recordBytes == null)
                 continue;
-            Map<String, Object> row = parseValueMap(raw);
+            Map<String, Object> row = decodeRow(recordBytes);
             Object pkVal = row.get(pkField.fieldName);
             if (pkVal != null) {
                 uidPrimaryKeyMap.put(uid, pkVal);
@@ -345,15 +347,15 @@ public class Table {
 
             // 5. 重试循环：处理“读不到/版本不是最新/并发产生新版本”等情况
             int retry = 0;
-            while (retry < MAX_RETRY && curUid != null) {
+            while (retry < MAX_UPDATE_RETRIES && curUid != null) {
                 retry++;
                 // readForUpdate：读取并加锁
-                // 成功：返回该版本 raw
-                // 失败(raw==null)：该 uid 在当前事务 xid 视角不可见（可能被删除/被新版本覆盖/不可见）
-                byte[] raw = vm.readForUpdate(xid, curUid);
+                // 成功：返回该版本的 Record bytes。
+                // 失败(recordBytes==null)：该 uid 在当前事务 xid 视角不可见（可能被删除、被新版本覆盖或不可见）。
+                byte[] recordBytes = vm.readForUpdate(xid, curUid);
 
                 // 5.1 如果当前 uid 已不可见：尝试用主键值重定位最新版本并重试
-                if (raw == null) {
+                if (recordBytes == null) {
                     if (primaryKeyVal != null) {
                         Long latestUid = getLatestUidByPrimaryKey(xid, pkField, primaryKeyVal);
                         if (latestUid != null && !latestUid.equals(curUid)) {
@@ -363,15 +365,15 @@ public class Table {
                     }
                     break;
                 }
-                // 5.2 能读到 raw：解析记录得到字段值映射
-                Map<String, Object> row = parseValueMap(raw);
+                // 5.2 能读到 Record bytes：解析记录得到字段值映射。
+                Map<String, Object> row = decodeRow(recordBytes);
                 // 并发下版本切换后，可能已不满足 WHERE，保持语义，仅更新执行时满足 WHERE 的行
                 if (update.where != null && !matchWhere(row, update.where)) {
                     vm.getLockManager().release(xid, curUid);
                     break;
                 }
 
-                // 5.3) readForUpdate 能返回 raw，表示：
+                // 5.3) readForUpdate 能返回 Record bytes，表示：
                 // - 当前 xid 已获得该 uid 的行锁（必要时等待）
                 // - 且该版本对当前事务可见
                 // 后续直接基于此版本做“删旧插新”，避免额外的二次校准逻辑。
@@ -381,8 +383,8 @@ public class Table {
                 // 删除旧版本
                 vm.delete(xid, curUid);
                 // 序列化新版本并插入，得到新 uid
-                raw = serializeValueMap(row);
-                long uuid = vm.insert(xid, raw);
+                byte[] rowBytes = encodeRow(row);
+                long uuid = vm.insert(xid, rowBytes);
                 count++;
                 // 更新索引：把新版本写入所有 indexed 字段的索引结构
                 for (Field f : fields) {
@@ -439,13 +441,13 @@ public class Table {
      */
     private Long getLatestUidByPrimaryKey(long xid, Field pkField, Object pkValue) throws Exception {
         long key = pkField.toKey(pkValue);
-        List<Long> uids = pkField.search(key, key);
+        List<Long> uids = pkField.searchRange(key, key);
         if (uids == null)
             return null;
         Long visibleUid = null;
         for (Long uid : uids) {
-            byte[] raw = vm.read(xid, uid);
-            if (raw == null)
+            byte[] recordBytes = vm.read(xid, uid);
+            if (recordBytes == null)
                 continue;
             if (visibleUid != null) {
                 // 同一主键在同一事务视角下出现多条可见版本，属于数据污染/严重一致性问题，必须 fail-fast。
@@ -546,11 +548,11 @@ public class Table {
     private ResultSet aggregate(long xid, Select select, List<Long> uids) throws Exception {
         AggregateContext aggCtx = AggregateContext.of(fields, select.aggregates);
         for (Long uid : uids) {
-            byte[] raw = vm.read(xid, uid);
-            if (raw == null)
+            byte[] recordBytes = vm.read(xid, uid);
+            if (recordBytes == null)
                 continue;
             // 聚合器容器统一接收row
-            aggCtx.accept(parseValueMap(raw));
+            aggCtx.accept(decodeRow(recordBytes));
         }
         Map<Aggregate, Integer> aggregateIndex = new HashMap<>();
         if (select.aggregates != null) {
@@ -585,11 +587,11 @@ public class Table {
         List<Field> groupingFields = getGroupingFields(select.groupBy);
         // 分组键
         for (Long uid : uids) {
-            byte[] raw = vm.read(xid, uid);
-            if (raw == null)
+            byte[] recordBytes = vm.read(xid, uid);
+            if (recordBytes == null)
                 continue;
             // 解码为 {字段名 → 值} 的映射
-            Map<String, Object> row = parseValueMap(raw);
+            Map<String, Object> row = decodeRow(recordBytes);
             // 根据 GROUP BY 字段值构造分组键
             GroupingKey key = new GroupingKey(row, groupingFields, select.groupBy);
             // 找到当前 group 对应的聚合器
@@ -662,10 +664,10 @@ public class Table {
         // 按出现顺序保留分组
         Set<GroupingKey> grouped = new LinkedHashSet<>();
         for (Long uid : uids) {
-            byte[] raw = vm.read(xid, uid);
-            if (raw == null)
+            byte[] recordBytes = vm.read(xid, uid);
+            if (recordBytes == null)
                 continue;
-            Map<String, Object> valueMap = parseValueMap(raw);
+            Map<String, Object> valueMap = decodeRow(recordBytes);
             GroupingKey key = new GroupingKey(valueMap, groupingFields, select.groupBy);
             grouped.add(key);
         }
@@ -875,7 +877,7 @@ public class Table {
 
             if (f.isIndexed()) {
                 Range r = f.computeExpression(exp);
-                List<Long> uids = f.search(r.getLeft(), r.getRight());
+                List<Long> uids = f.searchRange(r.getLeft(), r.getRight());
                 Set<Long> uidSet = new LinkedHashSet<>();
                 if (uids != null)
                     uidSet.addAll(uids);
@@ -902,7 +904,7 @@ public class Table {
             }
             Set<Long> uidSet = new LinkedHashSet<>();
             for (Range r : ranges) {
-                List<Long> uids = f1.search(r.getLeft(), r.getRight());
+                List<Long> uids = f1.searchRange(r.getLeft(), r.getRight());
                 if (uids != null)
                     uidSet.addAll(uids);
             }
@@ -965,10 +967,10 @@ public class Table {
 
         List<Long> matched = new ArrayList<>();
         for (Long uid : all) {
-            byte[] raw = vm.read(xid, uid);
-            if (raw == null)
+            byte[] recordBytes = vm.read(xid, uid);
+            if (recordBytes == null)
                 continue;
-            Map<String, Object> row = parseValueMap(raw);
+            Map<String, Object> row = decodeRow(recordBytes);
             if (matchWhere(row, where)) {
                 matched.add(uid);
             }
@@ -981,7 +983,7 @@ public class Table {
      */
     private List<Long> getAllUids() throws Exception {
         Field scanIndex = pickScanIndex();
-        return scanIndex.search(Long.MIN_VALUE, Long.MAX_VALUE);
+        return scanIndex.searchRange(Long.MIN_VALUE, Long.MAX_VALUE);
     }
 
     /**
@@ -1090,15 +1092,15 @@ public class Table {
     private Set<Long> getUidsByIndexAndExp(long xid, Field f, SingleExpression exp) throws Exception {
         Set<Long> res = new LinkedHashSet<>();
         Range r = f.computeExpression(exp);
-        List<Long> uids = f.search(r.getLeft(), r.getRight());
+        List<Long> uids = f.searchRange(r.getLeft(), r.getRight());
         if (uids == null || uids.isEmpty())
             return res;
 
         for (Long uid : uids) {
-            byte[] raw = vm.read(xid, uid);
-            if (raw == null)
+            byte[] recordBytes = vm.read(xid, uid);
+            if (recordBytes == null)
                 continue;
-            Map<String, Object> row = parseValueMap(raw);
+            Map<String, Object> row = decodeRow(recordBytes);
             if (matchExp(row, exp)) {
                 res.add(uid);
             }
@@ -1112,10 +1114,10 @@ public class Table {
     private List<Long> filterUidsByWhere(long xid, Set<Long> uidSet, Where where) throws Exception {
         List<Long> res = new ArrayList<>();
         for (Long uid : uidSet) {
-            byte[] raw = vm.read(xid, uid);
-            if (raw == null)
+            byte[] recordBytes = vm.read(xid, uid);
+            if (recordBytes == null)
                 continue;
-            Map<String, Object> row = parseValueMap(raw);
+            Map<String, Object> row = decodeRow(recordBytes);
             if (matchWhere(row, where)) {
                 res.add(uid);
             }
@@ -1134,10 +1136,10 @@ public class Table {
     private ResultSet toResultSet(long xid, Select select, List<Long> uids) throws Exception {
         List<Map<String, Object>> valueMapList = new ArrayList<>();
         for (Long uid : uids) {
-            byte[] raw = vm.read(xid, uid);
-            if (raw == null)
+            byte[] recordBytes = vm.read(xid, uid);
+            if (recordBytes == null)
                 continue;
-            valueMapList.add(parseValueMap(raw));
+            valueMapList.add(decodeRow(recordBytes));
         }
 
         List<Select.Item> projection = select.projection != null
@@ -1191,14 +1193,14 @@ public class Table {
     /**
      * 将一行二进制数据解析为（字段名 → 值）的映射。
      *
-     * @param raw 行原始字节
+     * @param rowBytes 行的字段值编码
      * @return 字段值映射
      */
-    private Map<String, Object> parseValueMap(byte[] raw) {
+    private Map<String, Object> decodeRow(byte[] rowBytes) {
         int pos = 0;
         Map<String, Object> valueMap = new HashMap<>();
         for (Field field : fields) {
-            ParsedValue r = field.parseValue(Arrays.copyOfRange(raw, pos, raw.length));
+            ParsedValue r = field.parseValue(rowBytes, pos);
             valueMap.put(field.fieldName, r.value);
             pos += r.size;
         }
@@ -1209,14 +1211,14 @@ public class Table {
      * 将（字段名 → 值）的映射编码为行二进制。
      *
      * @param valueMap 字段值映射
-     * @return 行原始字节
+     * @return 行的字段值编码
      */
-    private byte[] serializeValueMap(Map<String, Object> valueMap) {
-        byte[] raw = new byte[0];
+    private byte[] encodeRow(Map<String, Object> valueMap) {
+        byte[] rowBytes = new byte[0];
         for (Field field : fields) {
-            raw = Bytes.concat(raw, field.toRaw(valueMap.get(field.fieldName)));
+            rowBytes = Bytes.concat(rowBytes, field.encodeValue(valueMap.get(field.fieldName)));
         }
-        return raw;
+        return rowBytes;
     }
 
     // =========================================================

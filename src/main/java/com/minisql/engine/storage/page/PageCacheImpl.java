@@ -21,7 +21,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import com.minisql.engine.cache.AbstractCache;
 import com.minisql.engine.storage.wal.LogManager;
 import com.minisql.engine.storage.page.Page;
-import com.minisql.engine.storage.page.PageImpl;
+import com.minisql.engine.storage.page.CachedPage;
 import com.minisql.engine.storage.io.FileChannelUtil;
 import com.minisql.error.Panic;
 import com.minisql.error.Error;
@@ -29,7 +29,7 @@ import com.minisql.error.Error;
 public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
 
     // Constants
-    private static final int MEM_MIN_LIM = 10;
+    private static final int MIN_CACHE_PAGE_COUNT = 10;
     private static final long FLUSH_INTERVAL_MS = 1000L;
     private static final int MAX_PAGES_PER_BATCH = 64;
     public static final String DB_SUFFIX = ".db";
@@ -63,7 +63,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
     // Constructor
     PageCacheImpl(RandomAccessFile file, FileChannel fileChannel, int capacity) {
         super(capacity);
-        if (capacity < MEM_MIN_LIM) {
+        if (capacity < MIN_CACHE_PAGE_COUNT) {
             Panic.of(Error.MemTooSmallException);
         }
         long length = 0;
@@ -97,7 +97,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
                 throw new IllegalStateException("Page cache is closed");
             }
             int pgno = pageNumberCounter.get() + 1;
-            Page pg = new PageImpl(pgno, initData, this);
+            Page pg = new CachedPage(pgno, initData, this);
             persist(pg);
             // Only publish the new page number after its full initial image is durable.
             pageNumberCounter.set(pgno);
@@ -117,7 +117,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         release(page.getPageNumber());
     }
 
-    /** 持久化 PageOne */
+    /** 持久化 MetaPage */
     @Override
     public void persistPageOne(Page pg) {
         persist(pg);
@@ -201,7 +201,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         } finally {
             accessLock.readLock().unlock();
         }
-        return new PageImpl(pgno, buf.array(), this);
+        return new CachedPage(pgno, buf.array(), this);
     }
 
 

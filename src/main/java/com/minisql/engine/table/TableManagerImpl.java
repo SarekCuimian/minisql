@@ -9,7 +9,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import com.minisql.engine.storage.DataManager;
+import com.minisql.engine.storage.record.RecordManager;
 import com.minisql.engine.sql.ast.statement.Begin;
 import com.minisql.engine.sql.ast.statement.Create;
 import com.minisql.engine.sql.ast.statement.Delete;
@@ -28,15 +28,15 @@ import com.minisql.error.Error;
 
 public class TableManagerImpl implements TableManager {
     VersionManager vm;
-    DataManager dm;
+    RecordManager recordManager;
     private final Booter booter;
     private final Map<String, Table> tableCache;
     private final Lock rLock;
     private final Lock wLock;
     
-    TableManagerImpl(VersionManager vm, DataManager dm, Booter booter) {
+    TableManagerImpl(VersionManager vm, RecordManager recordManager, Booter booter) {
         this.vm = vm;
-        this.dm = dm;
+        this.recordManager = recordManager;
         this.booter = booter;
         this.tableCache = new HashMap<>();
         ReadWriteLock rwLock = new ReentrantReadWriteLock();
@@ -51,7 +51,7 @@ public class TableManagerImpl implements TableManager {
     private void loadTables() {
         long uid = firstTableUid();
         while(uid != 0) {
-            Table tb = Table.loadTable(this, uid);
+            Table tb = Table.load(this, uid);
             uid = tb.nextUid;
             tableCache.put(tb.name, tb);
         }
@@ -60,8 +60,8 @@ public class TableManagerImpl implements TableManager {
      * 获取第一个表的uid
      */
     private long firstTableUid() {
-        byte[] raw = booter.load();
-        return ByteUtil.parseLong(raw);
+        byte[] bootBytes = booter.load();
+        return ByteUtil.getLong(bootBytes, 0);
     }
 
     /**
@@ -69,8 +69,9 @@ public class TableManagerImpl implements TableManager {
      * @param uid 表 uid
      */
     private void updateFirstTableUid(long uid) {
-        byte[] raw = ByteUtil.longToByte(uid);
-        booter.update(raw);
+        byte[] bootBytes = new byte[Long.BYTES];
+        ByteUtil.putLong(bootBytes, 0, uid);
+        booter.update(bootBytes);
     }
 
     @Override
@@ -79,8 +80,8 @@ public class TableManagerImpl implements TableManager {
     }
 
     @Override
-    public DataManager getDataManager() {
-        return dm;
+    public RecordManager getRecordManager() {
+        return recordManager;
     }
 
     @Override
@@ -173,10 +174,10 @@ public class TableManagerImpl implements TableManager {
                 updateFirstTableUid(successorUid);
             } else {
                 // 就地覆盖前驱的 nextUid
-                byte[] raw = vm.read(xid, pre.uid);
-                int pos = ByteUtil.parseString(raw).size; // 跳过表名
-                System.arraycopy(ByteUtil.longToByte(successorUid), 0, raw, pos, 8);
-                vm.update(xid, pre.uid, raw);
+                byte[] tableBytes = vm.read(xid, pre.uid);
+                int pos = ByteUtil.decodeString(tableBytes, 0).size; // 跳过表名
+                ByteUtil.putLong(tableBytes, pos, successorUid);
+                vm.update(xid, pre.uid, tableBytes);
                 pre.nextUid = successorUid;
             }
 

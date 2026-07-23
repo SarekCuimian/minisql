@@ -23,9 +23,9 @@ public class TransactionManagerImpl implements TransactionManager {
     private static final int XID_STATUS_SIZE = 1;
 
     // 事务状态
-    private static final byte ACTIVE = 0;
-    private static final byte COMMITTED = 1;
-    private static final byte ABORTED = 2;
+    private static final byte STATUS_ACTIVE = 0;
+    private static final byte STATUS_COMMITTED = 1;
+    private static final byte STATUS_ABORTED = 2;
 
     // 超级事务（永远已提交）
     public static final long SUPER_XID = 0;
@@ -54,7 +54,7 @@ public class TransactionManagerImpl implements TransactionManager {
         wLock.lock();
         try {
             long xid = xidCounter + 1;
-            updateXidStatus(xid, ACTIVE);
+            updateXidStatus(xid, STATUS_ACTIVE);
             incrementXidCounter();
             return xid;
         } finally {
@@ -70,7 +70,7 @@ public class TransactionManagerImpl implements TransactionManager {
             if (xid == SUPER_XID || xid > xidCounter) {
                 return;
             }
-            updateXidStatus(xid, COMMITTED);
+            updateXidStatus(xid, STATUS_COMMITTED);
             lastLsnMap.remove(xid);
         } finally {
             wLock.unlock();
@@ -85,7 +85,7 @@ public class TransactionManagerImpl implements TransactionManager {
             if (xid == SUPER_XID || xid > xidCounter) {
                 return;
             }
-            updateXidStatus(xid, ABORTED);
+            updateXidStatus(xid, STATUS_ABORTED);
             lastLsnMap.remove(xid);
         } finally {
             wLock.unlock();
@@ -97,7 +97,7 @@ public class TransactionManagerImpl implements TransactionManager {
         if (xid == SUPER_XID) return false;
         rLock.lock();
         try {
-            return checkXidStatus(xid, ACTIVE);
+            return checkXidStatus(xid, STATUS_ACTIVE);
         } finally {
             rLock.unlock();
         }
@@ -108,7 +108,7 @@ public class TransactionManagerImpl implements TransactionManager {
         if (xid == SUPER_XID) return true;
         rLock.lock();
         try {
-            return checkXidStatus(xid, COMMITTED);
+            return checkXidStatus(xid, STATUS_COMMITTED);
         } finally {
             rLock.unlock();
         }
@@ -119,7 +119,7 @@ public class TransactionManagerImpl implements TransactionManager {
         if (xid == SUPER_XID) return false;
         rLock.lock();
         try {
-            return checkXidStatus(xid, ABORTED);
+            return checkXidStatus(xid, STATUS_ABORTED);
         } finally {
             rLock.unlock();
         }
@@ -175,7 +175,7 @@ public class TransactionManagerImpl implements TransactionManager {
             Panic.of(e);
         }
 
-        xidCounter = ByteUtil.parseLong(buf.array());
+        xidCounter = ByteUtil.getLong(buf.array(), 0);
         long expectedLen = getXidPosition(xidCounter + 1);
         if (expectedLen != fileSize) {
             Panic.of(Error.BadXIDFileException);
@@ -185,7 +185,9 @@ public class TransactionManagerImpl implements TransactionManager {
     // 将 xidCounter +1 并持久化到文件头
     private void incrementXidCounter() {
         xidCounter++;
-        ByteBuffer buf = ByteBuffer.wrap(ByteUtil.longToByte(xidCounter));
+        byte[] xidCounterBytes = new byte[Long.BYTES];
+        ByteUtil.putLong(xidCounterBytes, 0, xidCounter);
+        ByteBuffer buf = ByteBuffer.wrap(xidCounterBytes);
         try {
             FileChannelUtil.writeFully(fc, buf, 0);
             fc.force(false);

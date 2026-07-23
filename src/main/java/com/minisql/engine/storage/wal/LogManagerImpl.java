@@ -205,7 +205,7 @@ public class LogManagerImpl implements LogManager {
      * 阻塞直到 durable：保证返回时 flushedLsn >= lsn
      * 用途：
      * - commit：flush(commitLsn)
-     * - 刷页前：flush(pageLSN) (WAL)
+     * - 刷页前：flush(pageLsn) (WAL)
      */
     @Override
     public void flush(long lsn) {
@@ -627,8 +627,10 @@ public class LogManagerImpl implements LogManager {
 
     private static int calcHeaderChecksum(long checkpoint, long flushed) {
         CRC32C crc = new CRC32C();
-        byte[] check = ByteUtil.longToByte(checkpoint);
-        byte[] flush = ByteUtil.longToByte(flushed);
+        byte[] check = new byte[Long.BYTES];
+        byte[] flush = new byte[Long.BYTES];
+        ByteUtil.putLong(check, 0, checkpoint);
+        ByteUtil.putLong(flush, 0, flushed);
         crc.update(check, 0, check.length);
         crc.update(flush, 0, flush.length);
         return (int) crc.getValue();
@@ -636,8 +638,9 @@ public class LogManagerImpl implements LogManager {
 
     private static int calcRecordChecksum(long lsn, byte[] payload) {
         CRC32C crc = new CRC32C();
-        byte[] lsnRaw = ByteUtil.longToByte(lsn);
-        crc.update(lsnRaw, 0, lsnRaw.length);
+        byte[] lsnBytes = new byte[Long.BYTES];
+        ByteUtil.putLong(lsnBytes, 0, lsn);
+        crc.update(lsnBytes, 0, lsnBytes.length);
         crc.update(payload, 0, payload.length);
         return (int) crc.getValue();
     }
