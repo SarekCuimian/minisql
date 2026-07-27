@@ -1,5 +1,6 @@
 package com.minisql.engine.table;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -9,9 +10,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.LinkedHashSet;
 
-import com.google.common.primitives.Bytes;
-
-import com.minisql.engine.storage.record.RecordManager;
+import com.minisql.engine.storage.record.PageRecordManager;
+import com.minisql.engine.storage.codec.ByteReader;
+import com.minisql.engine.storage.codec.ByteWriter;
 import com.minisql.engine.sql.ast.statement.Create;
 import com.minisql.engine.sql.ast.statement.Delete;
 import com.minisql.engine.sql.ast.statement.Insert;
@@ -29,8 +30,6 @@ import com.minisql.engine.sql.ast.operator.CompareOperator;
 import com.minisql.engine.sql.ast.operator.LogicOperator;
 import com.minisql.engine.transaction.status.TransactionManagerImpl;
 import com.minisql.error.Panic;
-import com.minisql.engine.storage.codec.ByteUtil;
-import com.minisql.engine.storage.codec.ParsedValue;
 import com.minisql.engine.transaction.mvcc.VersionManager;
 import com.minisql.result.ResultSet;
 import com.minisql.error.Error;
@@ -51,7 +50,7 @@ import com.minisql.error.Error;
  * 说明：
  * </p>
  * <ul>
- * <li>TableName：变长字符串，Parser.stringToByte 编码</li>
+ * <li>TableName：{@code [UTF-8 byte length:int][UTF-8 bytes]}</li>
  * <li>NextTable：8 字节 long，指向下一张表的 UID（链表式组织）</li>
  * <li>FieldXUid：每个字段在 VM 中的 UID，均为 8 字节 long</li>
  * </ul>
@@ -67,7 +66,7 @@ public class Table {
 
     TableManager tbm;
     VersionManager vm;
-    RecordManager recordManager;
+    PageRecordManager pageRecordManager;
 
     // =========================================================
     // 静态工厂 / 加载方法
@@ -159,7 +158,7 @@ public class Table {
         this.uid = uid;
         this.tbm = tbm;
         this.vm = tbm.getVersionManager();
-        this.recordManager = tbm.getRecordManager();
+        this.pageRecordManager = tbm.getPageRecordManager();
     }
 
     /**
@@ -174,7 +173,7 @@ public class Table {
         this.name = tableName;
         this.nextUid = nextUid;
         this.vm = tbm.getVersionManager();
-        this.recordManager = tbm.getRecordManager();
+        this.pageRecordManager = tbm.getPageRecordManager();
     }
 
     // =========================================================
@@ -188,18 +187,15 @@ public class Table {
      * @return 当前 Table 自身（便于链式调用）
      */
     private Table parse(byte[] tableBytes) {
-        int position = 0;
-        ParsedValue parsed = ByteUtil.decodeString(tableBytes, position);
-        name = (String) parsed.value;
-        position += parsed.size;
-        nextUid = ByteUtil.getLong(tableBytes, position);
-        position += 8;
+        ByteReader reader = ByteReader.wrap(tableBytes);
+        int nameByteLength = reader.readInt();
+        name = reader.readUtf8(nameByteLength);
+        nextUid = reader.readLong();
 
-        while (position < tableBytes.length) {
-            long uid = ByteUtil.getLong(tableBytes, position);
-            position += 8;
-            fields.add(Field.load(this, uid));
+        while (reader.hasRemaining()) {
+            fields.add(Field.load(this, reader.readLong()));
         }
+        reader.requireFullyConsumed();
         return this;
     }
 
@@ -211,16 +207,18 @@ public class Table {
      * @throws Exception VM 写入失败
      */
     private Table persist(long xid) throws Exception {
-        byte[] nameBytes = ByteUtil.encodeString(name);
-        byte[] nextUidBytes = new byte[Long.BYTES];
-        ByteUtil.putLong(nextUidBytes, 0, nextUid);
-        byte[] fieldUidBytes = new byte[0];
+        byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+        int encodedSize = Integer.BYTES + nameBytes.length
+                + Long.BYTES
+                + fields.size() * Long.BYTES;
+        ByteWriter writer = ByteWriter.allocate(encodedSize);
+        writer.writeInt(nameBytes.length);
+        writer.writeBytes(nameBytes);
+        writer.writeLong(nextUid);
         for (Field field : fields) {
-            byte[] fieldUid = new byte[Long.BYTES];
-            ByteUtil.putLong(fieldUid, 0, field.uid);
-            fieldUidBytes = Bytes.concat(fieldUidBytes, fieldUid);
+            writer.writeLong(field.uid);
         }
-        uid = vm.insert(xid, Bytes.concat(nameBytes, nextUidBytes, fieldUidBytes));
+        uid = vm.insert(xid, writer.toByteArray());
         return this;
     }
 
@@ -1197,13 +1195,12 @@ public class Table {
      * @return 字段值映射
      */
     private Map<String, Object> decodeRow(byte[] rowBytes) {
-        int pos = 0;
+        ByteReader reader = ByteReader.wrap(rowBytes);
         Map<String, Object> valueMap = new HashMap<>();
         for (Field field : fields) {
-            ParsedValue r = field.parseValue(rowBytes, pos);
-            valueMap.put(field.fieldName, r.value);
-            pos += r.size;
+            valueMap.put(field.fieldName, field.parseValue(reader));
         }
+        reader.requireFullyConsumed();
         return valueMap;
     }
 
@@ -1214,11 +1211,18 @@ public class Table {
      * @return 行的字段值编码
      */
     private byte[] encodeRow(Map<String, Object> valueMap) {
-        byte[] rowBytes = new byte[0];
+        List<byte[]> encodedValues = new ArrayList<>(fields.size());
+        int encodedSize = 0;
         for (Field field : fields) {
-            rowBytes = Bytes.concat(rowBytes, field.encodeValue(valueMap.get(field.fieldName)));
+            byte[] encodedValue = field.encodeValue(valueMap.get(field.fieldName));
+            encodedValues.add(encodedValue);
+            encodedSize += encodedValue.length;
         }
-        return rowBytes;
+        ByteWriter writer = ByteWriter.allocate(encodedSize);
+        for (byte[] encodedValue : encodedValues) {
+            writer.writeBytes(encodedValue);
+        }
+        return writer.toByteArray();
     }
 
     // =========================================================

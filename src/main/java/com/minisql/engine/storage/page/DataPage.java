@@ -6,33 +6,34 @@ import com.minisql.engine.storage.codec.ByteUtil;
 /**
  * PageX管理普通页
  * 普通页结构
- * [FreeSpaceOffset 2B] [Data]
+ * [PageLsn 8B] [FreeSpaceOffset 2B] [Data]
  */
 public final class DataPage {
 
     private DataPage() {
     }
 
-    /** FSO 起始偏移（字节）。固定为 0。 */
-    private static final short FSO_OFFSET = 0;
+    /** FSO 字段在 Page 中的起始偏移。 */
+    private static final short FSO_OFFSET = PageHeader.HEADER_SIZE;
 
-    /** 数据区起始偏移（字节）。固定为 2。 */
-    private static final short PAYLOAD_OFFSET = 2;
+    /** physical record 区在 Page 中的起始偏移。 */
+    public static final short RECORD_AREA_OFFSET =
+            PageHeader.HEADER_SIZE + Short.BYTES;
 
     /**
      * 单页可用最大空闲空间（字节）。
      * <p>等于页大小减去 FSO 占用的 2 字节。</p>
      */
-    public static final int MAX_FREE_SPACE_SIZE = PageCache.PAGE_SIZE - PAYLOAD_OFFSET;
+    public static final int MAX_FREE_SPACE_SIZE = PageCache.PAGE_SIZE - RECORD_AREA_OFFSET;
 
     /**
-     * 创建一个普通页的初始 page bytes，并设置 FSO 指向数据区起始处（偏移 2）。
+     * 创建普通页，并设置 FSO 指向公共页头和 DataPage header 之后。
      *
      * @return 已初始化的 page bytes（长度为 {@link PageCache#PAGE_SIZE}）
      */
     public static byte[] newPageBytes() {
         byte[] pageBytes = new byte[PageCache.PAGE_SIZE];
-        setFso(pageBytes, PAYLOAD_OFFSET);
+        setFso(pageBytes, RECORD_AREA_OFFSET);
         return pageBytes;
     }
 
@@ -41,7 +42,7 @@ public final class DataPage {
      * <p><b>注意：</b>本方法不做越界与合法性校验。</p>
      *
      * @param pageBytes 页字节数组
-     * @param ofData 期望的空闲空间起始偏移（通常 ≥ {@link #PAYLOAD_OFFSET}）
+     * @param fso 期望的空闲空间起始偏移（通常 ≥ {@link #RECORD_AREA_OFFSET}）
      */
     private static void setFso(byte[] pageBytes, short fso) {
         ByteUtil.putShort(pageBytes, FSO_OFFSET, fso);
@@ -115,6 +116,11 @@ public final class DataPage {
         } finally {
             pg.rUnlock();
         }
+    }
+
+    /** 从持久化 Page bytes 计算剩余空间。 */
+    static int getFreeSpaceSize(byte[] pageBytes) {
+        return PageCache.PAGE_SIZE - (int) getFso(pageBytes);
     }
 
     /**

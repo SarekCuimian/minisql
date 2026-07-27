@@ -1,17 +1,16 @@
 package com.minisql.engine.table;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Locale;
-
-import com.google.common.primitives.Bytes;
 
 import com.minisql.engine.index.BPlusTree;
 import com.minisql.engine.sql.ast.expression.SingleExpression;
 import com.minisql.engine.sql.ast.operator.CompareOperator;
+import com.minisql.engine.storage.codec.ByteReader;
+import com.minisql.engine.storage.codec.ByteWriter;
 import com.minisql.engine.transaction.status.TransactionManagerImpl;
 import com.minisql.error.Panic;
-import com.minisql.engine.storage.codec.ByteUtil;
-import com.minisql.engine.storage.codec.ParsedValue;
 import com.minisql.error.Error;
 
 /**
@@ -71,8 +70,8 @@ public class Field {
         }
         Field f = new Field(tb, fieldName, type, 0, unique, primary);
         if(indexed) {
-            long index = BPlusTree.create(tb.recordManager);
-            BPlusTree tree = BPlusTree.load(index, tb.recordManager);
+            long index = BPlusTree.create(tb.pageRecordManager);
+            BPlusTree tree = BPlusTree.load(index, tb.pageRecordManager);
             f.index = index;
             f.tree = tree;
         }
@@ -82,50 +81,46 @@ public class Field {
 
     /** 解析持久化的 Field metadata，并回填当前对象。 */
     private Field parse(byte[] fieldBytes) {
-        int position = 0;
-        ParsedValue parsed = ByteUtil.decodeString(fieldBytes, position);
-        fieldName = (String) parsed.value;
-        position += parsed.size;
-        parsed = ByteUtil.decodeString(fieldBytes, position);
+        ByteReader reader = ByteReader.wrap(fieldBytes);
+        fieldName = readLengthPrefixedUtf8(reader);
+        String fieldTypeName = readLengthPrefixedUtf8(reader);
         try {
-            fieldType = FieldType.from((String) parsed.value);
+            fieldType = FieldType.from(fieldTypeName);
         } catch (Exception e) {
             Panic.of(e);
         }
-        position += parsed.size;
-        this.index = ByteUtil.getLong(fieldBytes, position);
+        this.index = reader.readLong();
         if(index != 0) {
             try {
-                tree = BPlusTree.load(index, tb.recordManager);
+                tree = BPlusTree.load(index, tb.pageRecordManager);
             } catch(Exception e) {
                 Panic.of(e);
             }
         }
-        position += 8;
-        if(position < fieldBytes.length) {
-            unique = fieldBytes[position] == (byte)1;
-            position += 1;
-        } else {
-            unique = false;
-        }
-        if(position < fieldBytes.length) {
-            primary = fieldBytes[position] == (byte)1;
-        } else {
-            primary = false;
-        }
+        // 兼容旧格式：早期 Field metadata 不包含这两个尾部标志。
+        unique = reader.hasRemaining() && reader.readBoolean();
+        primary = reader.hasRemaining() && reader.readBoolean();
+        reader.requireFullyConsumed();
         return this;
     }
 
     /** 编码当前 Field metadata 并持久化到 VersionManager。 */
     private void persist(long xid) throws Exception {
-        byte[] nameBytes = ByteUtil.encodeString(fieldName);
-        byte[] typeBytes = ByteUtil.encodeString(fieldType.name().toLowerCase(Locale.ROOT));
-        byte[] indexBytes = new byte[Long.BYTES];
-        ByteUtil.putLong(indexBytes, 0, index);
-        byte[] uniqueFlagBytes = new byte[] {(byte)(unique ? 1 : 0)};
-        byte[] primaryFlagBytes = new byte[] {(byte)(primary ? 1 : 0)};
-        this.uid = tb.vm
-                .insert(xid, Bytes.concat(nameBytes, typeBytes, indexBytes, uniqueFlagBytes, primaryFlagBytes));
+        byte[] nameBytes = fieldName.getBytes(StandardCharsets.UTF_8);
+        byte[] typeBytes = fieldType.name()
+                .toLowerCase(Locale.ROOT)
+                .getBytes(StandardCharsets.UTF_8);
+        int encodedSize = Integer.BYTES + nameBytes.length
+                + Integer.BYTES + typeBytes.length
+                + Long.BYTES
+                + 2 * Byte.BYTES;
+        ByteWriter writer = ByteWriter.allocate(encodedSize);
+        writeLengthPrefixedBytes(writer, nameBytes);
+        writeLengthPrefixedBytes(writer, typeBytes);
+        writer.writeLong(index);
+        writer.writeBoolean(unique);
+        writer.writeBoolean(primary);
+        this.uid = tb.vm.insert(xid, writer.toByteArray());
     }
 
     public boolean isIndexed() {
@@ -221,40 +216,47 @@ public class Field {
 
     /** 将字段值编码为存入行记录的 value bytes。 */
     public byte[] encodeValue(Object value) {
-        byte[] valueBytes = null;
         switch(fieldType) {
             case INT32:
-                valueBytes = new byte[Integer.BYTES];
-                ByteUtil.putInt(valueBytes, 0, (int) value);
-                break;
+                ByteWriter intWriter = ByteWriter.allocate(Integer.BYTES);
+                intWriter.writeInt((int) value);
+                return intWriter.toByteArray();
             case INT64:
-                valueBytes = new byte[Long.BYTES];
-                ByteUtil.putLong(valueBytes, 0, (long) value);
-                break;
+                ByteWriter longWriter = ByteWriter.allocate(Long.BYTES);
+                longWriter.writeLong((long) value);
+                return longWriter.toByteArray();
             case STRING:
-                valueBytes = ByteUtil.encodeString((String)value);
-                break;
+                byte[] stringBytes = ((String) value).getBytes(StandardCharsets.UTF_8);
+                ByteWriter stringWriter = ByteWriter.allocate(Integer.BYTES + stringBytes.length);
+                writeLengthPrefixedBytes(stringWriter, stringBytes);
+                return stringWriter.toByteArray();
+            default:
+                throw new IllegalStateException("Unsupported field type: " + fieldType);
         }
-        return valueBytes;
     }
 
-    /** 解析字段的 value bytes；字符串布局为 {@code [Length][Data]}。 */
-    public ParsedValue parseValue(byte[] valueBytes, int offset) {
-        Object value = null;
-        int size = 0;
+    /** 从行数据 reader 解析当前字段值；字符串布局为 {@code [Length][Data]}。 */
+    public Object parseValue(ByteReader reader) {
         switch(fieldType) {
             case INT32:
-                value = ByteUtil.getInt(valueBytes, offset);
-                size = 4;
-                break;
+                return reader.readInt();
             case INT64:
-                value = ByteUtil.getLong(valueBytes, offset);
-                size = 8;
-                break;
+                return reader.readLong();
             case STRING:
-                return ByteUtil.decodeString(valueBytes, offset);
+                return readLengthPrefixedUtf8(reader);
+            default:
+                throw new IllegalStateException("Unsupported field type: " + fieldType);
         }
-        return new ParsedValue(value, size);
+    }
+
+    private static String readLengthPrefixedUtf8(ByteReader reader) {
+        int byteLength = reader.readInt();
+        return reader.readUtf8(byteLength);
+    }
+
+    private static void writeLengthPrefixedBytes(ByteWriter writer, byte[] value) {
+        writer.writeInt(value.length);
+        writer.writeBytes(value);
     }
 
     public String stringValue(Object v) {

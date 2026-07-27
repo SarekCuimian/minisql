@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -12,6 +11,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import com.minisql.error.Panic;
 import com.minisql.engine.storage.codec.ByteUtil;
 import com.minisql.engine.storage.io.FileChannelUtil;
+import com.minisql.engine.storage.wal.ActiveTransaction;
+import com.minisql.engine.storage.wal.ActiveTransactionTable;
+import com.minisql.engine.storage.wal.LogRecord;
 import com.minisql.error.Error;
 
 public class TransactionManagerImpl implements TransactionManager {
@@ -37,7 +39,8 @@ public class TransactionManagerImpl implements TransactionManager {
     private final Lock rLock;
     private final Lock wLock;
     private long xidCounter;
-    private final ConcurrentHashMap<Long, Long> lastLsnMap = new ConcurrentHashMap<>();
+    private final ActiveTransactionTable activeTransactionTable =
+            new ActiveTransactionTable();
 
     TransactionManagerImpl(RandomAccessFile raf, FileChannel fc) {
         this.file = raf;
@@ -56,6 +59,11 @@ public class TransactionManagerImpl implements TransactionManager {
             long xid = xidCounter + 1;
             updateXidStatus(xid, STATUS_ACTIVE);
             incrementXidCounter();
+            activeTransactionTable.add(
+                    xid,
+                    ActiveTransaction.Status.ACTIVE,
+                    LogRecord.NO_LSN
+            );
             return xid;
         } finally {
             wLock.unlock();
@@ -71,7 +79,16 @@ public class TransactionManagerImpl implements TransactionManager {
                 return;
             }
             updateXidStatus(xid, STATUS_COMMITTED);
-            lastLsnMap.remove(xid);
+            ActiveTransaction transaction =
+                    activeTransactionTable.get(xid);
+            long lastLsn = transaction == null
+                    ? LogRecord.NO_LSN
+                    : transaction.getLastLsn();
+            activeTransactionTable.update(
+                    xid,
+                    ActiveTransaction.Status.COMMITTING,
+                    lastLsn
+            );
         } finally {
             wLock.unlock();
         }
@@ -86,7 +103,16 @@ public class TransactionManagerImpl implements TransactionManager {
                 return;
             }
             updateXidStatus(xid, STATUS_ABORTED);
-            lastLsnMap.remove(xid);
+            ActiveTransaction transaction =
+                    activeTransactionTable.get(xid);
+            long lastLsn = transaction == null
+                    ? LogRecord.NO_LSN
+                    : transaction.getLastLsn();
+            activeTransactionTable.update(
+                    xid,
+                    ActiveTransaction.Status.ABORTING,
+                    lastLsn
+            );
         } finally {
             wLock.unlock();
         }
@@ -130,7 +156,12 @@ public class TransactionManagerImpl implements TransactionManager {
         if (xid <= SUPER_XID) {
             return;
         }
-        lastLsnMap.merge(xid, lsn, Math::max);
+        ActiveTransaction transaction =
+                activeTransactionTable.get(xid);
+        ActiveTransaction.Status status = transaction == null
+                ? ActiveTransaction.Status.ACTIVE
+                : transaction.getStatus();
+        activeTransactionTable.update(xid, status, lsn);
     }
 
     @Override
@@ -138,7 +169,45 @@ public class TransactionManagerImpl implements TransactionManager {
         if (xid <= SUPER_XID) {
             return 0L;
         }
-        return lastLsnMap.getOrDefault(xid, 0L);
+        ActiveTransaction transaction =
+                activeTransactionTable.get(xid);
+        return transaction == null ? LogRecord.NO_LSN : transaction.getLastLsn();
+    }
+
+    @Override
+    public void markCommitting(long xid) {
+        updateRuntimeStatus(xid, ActiveTransaction.Status.COMMITTING);
+    }
+
+    @Override
+    public void markAborting(long xid) {
+        updateRuntimeStatus(xid, ActiveTransaction.Status.ABORTING);
+    }
+
+    @Override
+    public java.util.Map<Long, ActiveTransaction>
+            snapshotActiveTransactions() {
+        return activeTransactionTable.snapshot();
+    }
+
+    @Override
+    public void complete(long xid) {
+        activeTransactionTable.remove(xid);
+    }
+
+    private void updateRuntimeStatus(
+            long xid,
+            ActiveTransaction.Status status
+    ) {
+        if (xid <= SUPER_XID) {
+            return;
+        }
+        ActiveTransaction transaction =
+                activeTransactionTable.get(xid);
+        long lastLsn = transaction == null
+                ? LogRecord.NO_LSN
+                : transaction.getLastLsn();
+        activeTransactionTable.update(xid, status, lastLsn);
     }
 
     @Override

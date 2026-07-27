@@ -1,6 +1,6 @@
 package com.minisql.engine.storage.codec;
 
-import java.nio.charset.StandardCharsets;
+import java.nio.ByteOrder;
 import java.util.Objects;
 
 /**
@@ -10,6 +10,9 @@ import java.util.Objects;
  * 临时数组或 {@code ByteBuffer}。</p>
  */
 public final class ByteUtil {
+
+    /** MiniSQL 所有持久化 binary format 统一使用的字节序。 */
+    public static final ByteOrder DISK_BYTE_ORDER = ByteOrder.BIG_ENDIAN;
 
     private ByteUtil() {
     }
@@ -64,27 +67,6 @@ public final class ByteUtil {
         bytes[offset + 5] = (byte) (value >>> 16);
         bytes[offset + 6] = (byte) (value >>> 8);
         bytes[offset + 7] = (byte) value;
-    }
-
-    /** 将 UTF-8 string 编码为 {@code [byte length: int][bytes]}。 */
-    public static byte[] encodeString(String value) {
-        byte[] valueBytes = value.getBytes(StandardCharsets.UTF_8);
-        byte[] encoded = new byte[Integer.BYTES + valueBytes.length];
-        putInt(encoded, 0, valueBytes.length);
-        System.arraycopy(valueBytes, 0, encoded, Integer.BYTES, valueBytes.length);
-        return encoded;
-    }
-
-    /** 从 {@code offset} 开始解码 UTF-8 string。 */
-    public static ParsedValue decodeString(byte[] bytes, int offset) {
-        int length = getInt(bytes, offset);
-        if (length < 0) {
-            throw new IllegalArgumentException("string length must not be negative");
-        }
-        int valueOffset = offset + Integer.BYTES;
-        checkRange(bytes, valueOffset, length);
-        return new ParsedValue(new String(bytes, valueOffset, length, StandardCharsets.UTF_8),
-                Integer.BYTES + length);
     }
 
     private static void checkRange(byte[] bytes, int offset, int length) {

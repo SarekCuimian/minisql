@@ -2,10 +2,7 @@ package com.minisql.engine.storage.wal;
 
 public interface LogManager extends AutoCloseable {
 
-    int START_LSN_INDEX = 0;
-    int END_LSN_INDEX = 1;
-    
-    long[] log(byte[] payload);
+    LogRecord append(byte[] payload);
 
     void flush(long lsn);
 
@@ -39,7 +36,7 @@ public interface LogManager extends AutoCloseable {
     }
 
     interface LogReader extends AutoCloseable {
-        byte[] next();
+        LogRecord next();
 
         void rewind();
 

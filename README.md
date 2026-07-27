@@ -26,7 +26,11 @@ MiniSQL 是一个基于 Java 的小型数据库项目，当前代码包含三部
 
 ## 目录说明
 
-- `src/main/java/com/minisql/backend`：数据库内核与 TCP 服务端
+- `src/main/java/com/minisql/engine`：数据库内核
+- `src/main/java/com/minisql/engine/storage`：Page、Record、WAL 与恢复
+- `src/main/java/com/minisql/engine/transaction`：事务状态、MVCC 与锁管理
+- `src/main/java/com/minisql/server`：TCP 服务端
+- `src/main/java/com/minisql/transport`：客户端与服务端的网络协议
 - `src/main/java/com/minisql/client`：命令行客户端
 - `src/main/java/com/minisql/api`：Spring Boot API
 - `scripts/restart.sh`：一键重启后端并启动客户端

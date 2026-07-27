@@ -66,7 +66,7 @@ public class Node implements AutoCloseable {
     }
 
     static Node load(BPlusTree tree, long uid) throws Exception {
-        PageRecord record = tree.recordManager.acquire(uid);
+        PageRecord record = tree.pageRecordManager.acquire(uid);
         assert record != null;
         return new Node(tree, record);
     }
@@ -211,7 +211,7 @@ public class Node implements AutoCloseable {
         setSiblingUid(newNodeBytes, getSiblingUid(nodeBytes));
         copyEntriesFrom(nodeBytes, BALANCE_NUMBER, newNodeBytes, BALANCE_NUMBER);
 
-        long rightNodeUid = tree.recordManager.insert(
+        long rightNodeUid = tree.pageRecordManager.insert(
                 TransactionManagerImpl.SUPER_XID,
                 newNodeBytes.bytes()
         );

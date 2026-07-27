@@ -25,13 +25,19 @@ public interface PageCache {
 
     void markDirtyPage(int pgno, long recLsn);
 
+    Map<Integer, Long> snapshotDirtyPages();
+
+    void setCheckpointManager(
+            com.minisql.engine.storage.wal.CheckpointManager checkpointManager
+    );
+
     void close();
 
     void trimBadTail(int maxPgno);
 
     int getPageCount();
 
-    void persistPageOne(Page pg);
+    void persistMetaPage(Page page);
 
     Map<Integer, Integer> getPageFreeMap();
 

@@ -6,7 +6,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import com.minisql.engine.storage.codec.ByteSlice;
-import com.minisql.engine.storage.record.RecordManager;
+import com.minisql.engine.storage.record.PageRecordManager;
 import com.minisql.engine.storage.record.PageRecord;
 import com.minisql.engine.index.Node.ChildLookupResult;
 import com.minisql.engine.index.Node.InsertResult;
@@ -15,25 +15,25 @@ import com.minisql.engine.transaction.status.TransactionManagerImpl;
 import com.minisql.engine.storage.codec.ByteUtil;
 
 public class BPlusTree {
-    RecordManager recordManager;
+    PageRecordManager pageRecordManager;
     long bootUid;
     PageRecord bootRecord;
     Lock bootLock;
 
-    public static long create(RecordManager recordManager) throws Exception {
+    public static long create(PageRecordManager pageRecordManager) throws Exception {
         byte[] rootBytes = Node.newEmptyRootBytes();
-        long rootUid = recordManager.insert(TransactionManagerImpl.SUPER_XID, rootBytes);
+        long rootUid = pageRecordManager.insert(TransactionManagerImpl.SUPER_XID, rootBytes);
         byte[] rootPointer = new byte[Long.BYTES];
         ByteUtil.putLong(rootPointer, 0, rootUid);
-        return recordManager.insert(TransactionManagerImpl.SUPER_XID, rootPointer);
+        return pageRecordManager.insert(TransactionManagerImpl.SUPER_XID, rootPointer);
     }
 
-    public static BPlusTree load(long bootUid, RecordManager recordManager) throws Exception {
-        PageRecord bootRecord = recordManager.acquire(bootUid);
+    public static BPlusTree load(long bootUid, PageRecordManager pageRecordManager) throws Exception {
+        PageRecord bootRecord = pageRecordManager.acquire(bootUid);
         assert bootRecord != null;
         BPlusTree t = new BPlusTree();
         t.bootUid = bootUid;
-        t.recordManager = recordManager;
+        t.pageRecordManager = pageRecordManager;
         t.bootRecord = bootRecord;
         t.bootLock = new ReentrantLock();
         return t;
@@ -53,7 +53,7 @@ public class BPlusTree {
         bootLock.lock();
         try {
             byte[] rootBytes = Node.newRootBytes(leftUid, rightUid, separatorKey);
-            long newRootUid = recordManager.insert(TransactionManagerImpl.SUPER_XID, rootBytes);
+            long newRootUid = pageRecordManager.insert(TransactionManagerImpl.SUPER_XID, rootBytes);
             bootRecord.startUpdate();
             ByteSlice payload = bootRecord.payload();
             ByteUtil.putLong(payload.bytes(), payload.offset(), newRootUid);

@@ -1,5 +1,10 @@
 package com.minisql.engine.transaction.status;
 
+import java.util.Collections;
+import java.util.Map;
+
+import com.minisql.engine.storage.wal.ActiveTransaction;
+
 public class MockTransactionManager implements TransactionManager {
 
     @Override
@@ -35,6 +40,20 @@ public class MockTransactionManager implements TransactionManager {
     public long getLastLsn(long xid) {
         return 0;
     }
+
+    @Override
+    public void markCommitting(long xid) {}
+
+    @Override
+    public void markAborting(long xid) {}
+
+    @Override
+    public Map<Long, ActiveTransaction> snapshotActiveTransactions() {
+        return Collections.emptyMap();
+    }
+
+    @Override
+    public void complete(long xid) {}
 
     @Override
     public void close() {}

@@ -2,6 +2,7 @@ package com.minisql.engine.storage.page;
 
 import java.util.Arrays;
 
+import com.minisql.engine.storage.codec.ByteUtil;
 import com.minisql.engine.storage.page.PageCache;
 import com.minisql.engine.storage.page.RandomUtil;
 
@@ -13,6 +14,11 @@ import com.minisql.engine.storage.page.RandomUtil;
  */
 public final class MetaPage {
 
+    private static final int FORMAT_MAGIC = 0x4D53514C; // "MSQL"
+    private static final int FORMAT_VERSION = 2;
+    private static final int FORMAT_MAGIC_OFFSET = PageHeader.HEADER_SIZE;
+    private static final int FORMAT_VERSION_OFFSET = FORMAT_MAGIC_OFFSET + Integer.BYTES;
+
     private MetaPage() {
     }
 
@@ -21,10 +27,8 @@ public final class MetaPage {
      */
     private static final int VALIDATION_OFFSET = 100;
 
-    /**
-     * 校验区长度（8 字节）
-     */
-    private static final int VALID_CHECK_SIZE = 8;
+    /** 单个 validation bytes 序列的长度。 */
+    private static final int VALIDATION_LENGTH = 8;
 
     /**
      * 初始化数据库第一页的数据。
@@ -34,8 +38,30 @@ public final class MetaPage {
      */
     public static byte[] newPageBytes() {
         byte[] pageBytes = new byte[PageCache.PAGE_SIZE];
+        ByteUtil.putInt(pageBytes, FORMAT_MAGIC_OFFSET, FORMAT_MAGIC);
+        ByteUtil.putInt(pageBytes, FORMAT_VERSION_OFFSET, FORMAT_VERSION);
         setVcOpen(pageBytes);
         return pageBytes;
+    }
+
+    /** 明确拒绝旧版或未知数据库 Page format。 */
+    public static void requireSupportedFormat(Page page) {
+        page.rLock();
+        try {
+            byte[] pageBytes = page.getBytes();
+            int magic = ByteUtil.getInt(pageBytes, FORMAT_MAGIC_OFFSET);
+            int version = ByteUtil.getInt(pageBytes, FORMAT_VERSION_OFFSET);
+            if (magic != FORMAT_MAGIC || version != FORMAT_VERSION) {
+                throw new IllegalStateException(
+                        "Unsupported database page format: magic=0x"
+                                + Integer.toHexString(magic)
+                                + ", version=" + version
+                                + ", expectedVersion=" + FORMAT_VERSION
+                );
+            }
+        } finally {
+            page.rUnlock();
+        }
     }
 
     /**
@@ -60,9 +86,9 @@ public final class MetaPage {
      */
     private static void setVcOpen(byte[] pageBytes) {
         System.arraycopy(
-                RandomUtil.randomBytes(VALID_CHECK_SIZE), 0,
+                RandomUtil.randomBytes(VALIDATION_LENGTH), 0,
                 pageBytes, VALIDATION_OFFSET,
-                VALID_CHECK_SIZE
+                VALIDATION_LENGTH
         );
     }
 
@@ -91,8 +117,8 @@ public final class MetaPage {
     private static void setVcClose(byte[] pageBytes) {
         System.arraycopy(
                 pageBytes, VALIDATION_OFFSET,
-                pageBytes, VALIDATION_OFFSET + VALID_CHECK_SIZE,
-                VALID_CHECK_SIZE
+                pageBytes, VALIDATION_OFFSET + VALIDATION_LENGTH,
+                VALIDATION_LENGTH
         );
     }
 
@@ -120,8 +146,12 @@ public final class MetaPage {
      */
     private static boolean checkVc(byte[] pageBytes) {
         return Arrays.equals(
-                Arrays.copyOfRange(pageBytes, VALIDATION_OFFSET, VALIDATION_OFFSET + VALID_CHECK_SIZE),
-                Arrays.copyOfRange(pageBytes, VALIDATION_OFFSET + VALID_CHECK_SIZE, VALIDATION_OFFSET + 2 * VALID_CHECK_SIZE)
+                Arrays.copyOfRange(pageBytes, VALIDATION_OFFSET, VALIDATION_OFFSET + VALIDATION_LENGTH),
+                Arrays.copyOfRange(
+                        pageBytes,
+                        VALIDATION_OFFSET + VALIDATION_LENGTH,
+                        VALIDATION_OFFSET + 2 * VALIDATION_LENGTH
+                )
         );
     }
 }

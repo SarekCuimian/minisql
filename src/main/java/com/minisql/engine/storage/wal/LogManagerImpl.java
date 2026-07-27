@@ -11,7 +11,8 @@ import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.CRC32C;
 
-import com.minisql.engine.storage.codec.ByteUtil;
+import com.minisql.engine.storage.codec.ByteReader;
+import com.minisql.engine.storage.codec.ByteWriter;
 import com.minisql.engine.storage.io.FileChannelUtil;
 import com.minisql.error.Panic;
 import com.minisql.error.Error;
@@ -25,20 +26,24 @@ import com.minisql.error.Error;
  *   HDR_CRC(4) CHECKPOINT_LSN(8) FLUSHED_LSN(8)
  *   RESERVED(4)
  * Record:
- *   payloadSize(4) recordCRC(4) lsn(8) payload(payloadSize)
+ *   payloadLength(4) recordCRC(4) endLsn(8) payload(payloadLength)
  *
  * LSN = record 在文件中的结束偏移（byte offset）
  */
 public class LogManagerImpl implements LogManager {
 
     private static final int MAGIC = 0x524C4F47; // "RLOG"
-    private static final int VERSION = 2;
+    private static final int VERSION = 5;
 
-    private static final int HEADER_SIZE = 32;
-    private static final int RECORD_HEADER_SIZE = 16;
+    /** WAL 文件头固定占用的字节数。 */
+    private static final int WAL_HEADER_SIZE = 32;
+    /** WAL record header 固定占用的字节数。 */
+    private static final int WAL_RECORD_HEADER_SIZE = 16;
 
-    private static final int DEFAULT_LOG_BUFFER_SIZE = 4 << 20; // 4MB log buffer
-    private static final int WRITE_AHEAD_BUFFER_SIZE = 8 * 1024; // 8KB writer buffer
+    /** 默认 WAL ring buffer 容量：4 MiB。 */
+    private static final int DEFAULT_LOG_BUFFER_CAPACITY = 4 << 20;
+    /** LogWriter 单次聚合写入使用的 buffer 容量：8 KiB。 */
+    private static final int WRITE_BUFFER_CAPACITY = 8 * 1024;
     private static final long FLUSH_INTERVAL_MS = 100L;     // flusher 最多睡 100ms
 
     public static final String LOG_SUFFIX = ".log";
@@ -48,6 +53,7 @@ public class LogManagerImpl implements LogManager {
     private final FileChannel channel;
 
     private final ReentrantLock lock = new ReentrantLock();
+    private final ReentrantLock headerIoLock = new ReentrantLock();
 
     /** buffer 有空位 */
     private final Condition notFull = lock.newCondition();
@@ -89,7 +95,7 @@ public class LogManagerImpl implements LogManager {
     private Thread flusher;
 
     public static LogManagerImpl create(String path) {
-        return create(path, DEFAULT_LOG_BUFFER_SIZE);
+        return create(path, DEFAULT_LOG_BUFFER_CAPACITY);
     }
 
     public static LogManagerImpl create(String path, int bufferSize) {
@@ -121,7 +127,7 @@ public class LogManagerImpl implements LogManager {
     }
 
     public static LogManagerImpl open(String path) {
-        return open(path, DEFAULT_LOG_BUFFER_SIZE);
+        return open(path, DEFAULT_LOG_BUFFER_CAPACITY);
     }
 
     public static LogManagerImpl open(String path, int bufferSize) {
@@ -156,16 +162,14 @@ public class LogManagerImpl implements LogManager {
         this.ringBuffer = new RingBuffer(Math.max(64, bufferSize));
     }
 
-    /**
-     * 追加一条日志到内存 buffer，返回该记录的 start/end LSN
-     */
+    /** 追加 payload，并返回包含 WAL interval 的完整物理记录。 */
     @Override
-    public long[] log(byte[] payload) {
+    public LogRecord append(byte[] payload) {
         if (payload == null) {
             throw new IllegalArgumentException("payload is null");
         }
         // 记录长度 = 记录头长度 + 负载长度
-        int recordSize = RECORD_HEADER_SIZE + payload.length;
+        int recordSize = WAL_RECORD_HEADER_SIZE + payload.length;
         if (recordSize > ringBuffer.capacity()) {
             // 简化实现：不支持超大 record（生产级可做 bypass buffer 直接写文件）
             throw new IllegalArgumentException("record too large: " + recordSize);
@@ -191,8 +195,7 @@ public class LogManagerImpl implements LogManager {
             // 写入后唤醒 writer，buffer 里有数据了，可以写文件
             notEmpty.signal();
 
-            // 返回本条记录的起止 LSN
-            return new long[] {start, end};
+            return new LogRecord(start, end, payload);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RuntimeException(e);
@@ -270,16 +273,25 @@ public class LogManagerImpl implements LogManager {
      */
     @Override
     public void setCheckpointLsn(long lsn) {
+        long durableLsn;
         lock.lock();
         try {
-            lsn = (lsn < HEADER_SIZE) ? HEADER_SIZE : lsn;
-            // header 中的 checkpoint 不应超过 durable 边界
-            checkpointLsn = Math.min(lsn, flushedLsn);
-
-            // 唤醒 flusher 尽快把新 header 持久化（否则要等 timeout）
-            written.signal();
+            lsn = (lsn < WAL_HEADER_SIZE) ? WAL_HEADER_SIZE : lsn;
+            if (lsn > flushedLsn) {
+                throw new IllegalArgumentException(
+                        "checkpointLsn exceeds flushedLsn: "
+                                + lsn + " > " + flushedLsn
+                );
+            }
+            checkpointLsn = lsn;
+            durableLsn = flushedLsn;
         } finally {
             lock.unlock();
+        }
+        try {
+            persistHeader(durableLsn);
+        } catch (IOException exception) {
+            Panic.of(exception);
         }
     }
 
@@ -338,7 +350,7 @@ public class LogManagerImpl implements LogManager {
      */
     private final class LogWriter implements Runnable {
         
-        private final ByteBuffer writeAheadBuffer = ByteBuffer.allocate(WRITE_AHEAD_BUFFER_SIZE);
+        private final ByteBuffer writeAheadBuffer = ByteBuffer.allocate(WRITE_BUFFER_CAPACITY);
 
         @Override
         public void run() {
@@ -406,8 +418,6 @@ public class LogManagerImpl implements LogManager {
         public void run() {
             while (running) {
                 long target;
-                long checkpoint;
-
                 lock.lock();
                 try {
                     // writtenLsn <= flushedLsn
@@ -426,8 +436,6 @@ public class LogManagerImpl implements LogManager {
 
                     // 本轮 flush 的目标是当前 writtenLsn
                     target = writtenLsn;
-                    checkpoint = Math.min(checkpointLsn, target);
-
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;
@@ -437,9 +445,7 @@ public class LogManagerImpl implements LogManager {
 
                 // 不持锁做 IO：写 header + force
                 try {
-                    writeHeader(checkpoint, target);
-                    // 将 FileChannel 中数据最终刷入磁盘
-                    channel.force(false);
+                    persistHeader(target);
                 } catch (IOException e) {
                     Panic.of(e);
                 }
@@ -470,15 +476,14 @@ public class LogManagerImpl implements LogManager {
      */
     private void initLogFile() {
         // header 中存储的字段
-        checkpointLsn = HEADER_SIZE;
-        flushedLsn = HEADER_SIZE;
+        checkpointLsn = WAL_HEADER_SIZE;
+        flushedLsn = WAL_HEADER_SIZE;
         // 内存中存储的字段
-        currentLsn = HEADER_SIZE;
-        writtenLsn = HEADER_SIZE;
+        currentLsn = WAL_HEADER_SIZE;
+        writtenLsn = WAL_HEADER_SIZE;
         flushTargetLsn = 0;
         try {
-            writeHeader(checkpointLsn, flushedLsn);
-            channel.force(false);
+            persistHeader(flushedLsn);
         } catch (IOException e) {
             Panic.of(e);
         }
@@ -492,25 +497,24 @@ public class LogManagerImpl implements LogManager {
             Panic.of(e);
             return;
         }
-        if (size < HEADER_SIZE) {
+        if (size < WAL_HEADER_SIZE) {
             Panic.of(Error.BadLogFileException);
         }
 
-        ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
+        byte[] headerBytes = new byte[WAL_HEADER_SIZE];
         try {
-            FileChannelUtil.readFully(channel, buf, 0);
+            FileChannelUtil.readFully(channel, ByteBuffer.wrap(headerBytes), 0);
         } catch (IOException e) {
             Panic.of(e);
         }
-        // limit = HEADER_SIZE, position = 0, 进入读模式
-        buf.flip();
-
-        int magic = buf.getInt();
-        int version = buf.getInt();
-        int checksum = buf.getInt();
-        long checkpoint = buf.getLong();
-        long flushed = buf.getLong();
-        buf.getInt(); // reserved
+        ByteReader reader = ByteReader.wrap(headerBytes);
+        int magic = reader.readInt();
+        int version = reader.readInt();
+        int checksum = reader.readInt();
+        long checkpoint = reader.readLong();
+        long flushed = reader.readLong();
+        reader.readInt(); // reserved
+        reader.requireFullyConsumed();
 
         // 检查 header
         if (magic != MAGIC || version != VERSION) {
@@ -541,11 +545,12 @@ public class LogManagerImpl implements LogManager {
             return;
         }
 
-        long pos = HEADER_SIZE;
+        long pos = WAL_HEADER_SIZE;
         long lastValid = pos;
 
-        ByteBuffer header = ByteBuffer.allocate(RECORD_HEADER_SIZE);
-        while (pos + RECORD_HEADER_SIZE <= size) {
+        byte[] headerBytes = new byte[WAL_RECORD_HEADER_SIZE];
+        ByteBuffer header = ByteBuffer.wrap(headerBytes);
+        while (pos + WAL_RECORD_HEADER_SIZE <= size) {
             header.clear();
             try {
                 FileChannelUtil.readFully(channel, header, pos);
@@ -553,31 +558,31 @@ public class LogManagerImpl implements LogManager {
                 Panic.of(e);
                 break;
             }
-            header.flip();
-
-            int payloadLen = header.getInt();
-            int checksum = header.getInt();
-            long endLsn = header.getLong();
-            long recordEnd = pos + RECORD_HEADER_SIZE + payloadLen;
+            ByteReader reader = ByteReader.wrap(headerBytes);
+            int payloadLength = reader.readInt();
+            int checksum = reader.readInt();
+            long endLsn = reader.readLong();
+            reader.requireFullyConsumed();
+            long recordEnd = pos + WAL_RECORD_HEADER_SIZE + payloadLength;
 
             // lsn 必须等于 record 结束位置（防止错位）
-            if (payloadLen < 0 || endLsn != recordEnd) {
+            if (payloadLength < 0 || endLsn != recordEnd) {
                 break;
             }
             if (recordEnd > size) {
                 break;
             }
 
-            ByteBuffer data = ByteBuffer.allocate(payloadLen);
+            ByteBuffer data = ByteBuffer.allocate(payloadLength);
             try {
-                FileChannelUtil.readFully(channel, data, pos + RECORD_HEADER_SIZE);
+                FileChannelUtil.readFully(channel, data, pos + WAL_RECORD_HEADER_SIZE);
             } catch (IOException e) {
                 Panic.of(e);
                 break;
             }
 
             byte[] payload = data.array();
-            int calc = calcRecordChecksum(endLsn, payload);
+            int calc = calcRecordChecksum(payloadLength, endLsn, payload);
             if (calc != checksum) {
                 break;
             }
@@ -604,43 +609,65 @@ public class LogManagerImpl implements LogManager {
 
     private void writeHeader(long checkpoint, long flushed) throws IOException {
         int checksum = calcHeaderChecksum(checkpoint, flushed);
-        ByteBuffer buf = ByteBuffer.allocate(HEADER_SIZE);
-        buf.putInt(MAGIC);
-        buf.putInt(VERSION);
-        buf.putInt(checksum);
-        buf.putLong(checkpoint);
-        buf.putLong(flushed);
-        buf.putInt(0); // reserved
-        buf.flip();
-        FileChannelUtil.writeFully(channel, buf, 0);
+        ByteWriter writer = ByteWriter.allocate(WAL_HEADER_SIZE);
+        writer.writeInt(MAGIC);
+        writer.writeInt(VERSION);
+        writer.writeInt(checksum);
+        writer.writeLong(checkpoint);
+        writer.writeLong(flushed);
+        writer.writeInt(0); // reserved
+        FileChannelUtil.writeFully(channel, ByteBuffer.wrap(writer.toByteArray()), 0);
+    }
+
+    private void persistHeader(long durableLsn) throws IOException {
+        headerIoLock.lock();
+        try {
+            long durableCheckpointLsn;
+            lock.lock();
+            try {
+                durableCheckpointLsn = Math.min(checkpointLsn, durableLsn);
+            } finally {
+                lock.unlock();
+            }
+            writeHeader(durableCheckpointLsn, durableLsn);
+            channel.force(false);
+        } finally {
+            headerIoLock.unlock();
+        }
     }
 
     private static byte[] wrapRecord(long lsn, byte[] payload) {
-        int checksum = calcRecordChecksum(lsn, payload);
-        ByteBuffer buf = ByteBuffer.allocate(RECORD_HEADER_SIZE + payload.length);
-        buf.putInt(payload.length);
-        buf.putInt(checksum);
-        buf.putLong(lsn);
-        buf.put(payload);
-        return buf.array();
+        int checksum = calcRecordChecksum(payload.length, lsn, payload);
+        ByteWriter writer = ByteWriter.allocate(WAL_RECORD_HEADER_SIZE + payload.length);
+        writer.writeInt(payload.length);
+        writer.writeInt(checksum);
+        writer.writeLong(lsn);
+        writer.writeBytes(payload);
+        return writer.toByteArray();
     }
 
     private static int calcHeaderChecksum(long checkpoint, long flushed) {
         CRC32C crc = new CRC32C();
-        byte[] check = new byte[Long.BYTES];
-        byte[] flush = new byte[Long.BYTES];
-        ByteUtil.putLong(check, 0, checkpoint);
-        ByteUtil.putLong(flush, 0, flushed);
-        crc.update(check, 0, check.length);
-        crc.update(flush, 0, flush.length);
+        ByteWriter writer = ByteWriter.allocate(
+                3 * Integer.BYTES + 2 * Long.BYTES
+        );
+        writer.writeInt(MAGIC);
+        writer.writeInt(VERSION);
+        writer.writeLong(checkpoint);
+        writer.writeLong(flushed);
+        writer.writeInt(0); // reserved
+        byte[] checksumBytes = writer.toByteArray();
+        crc.update(checksumBytes, 0, checksumBytes.length);
         return (int) crc.getValue();
     }
 
-    private static int calcRecordChecksum(long lsn, byte[] payload) {
+    private static int calcRecordChecksum(int payloadLength, long endLsn, byte[] payload) {
         CRC32C crc = new CRC32C();
-        byte[] lsnBytes = new byte[Long.BYTES];
-        ByteUtil.putLong(lsnBytes, 0, lsn);
-        crc.update(lsnBytes, 0, lsnBytes.length);
+        ByteWriter writer = ByteWriter.allocate(Integer.BYTES + Long.BYTES);
+        writer.writeInt(payloadLength);
+        writer.writeLong(endLsn);
+        byte[] headerBytes = writer.toByteArray();
+        crc.update(headerBytes, 0, headerBytes.length);
         crc.update(payload, 0, payload.length);
         return (int) crc.getValue();
     }
@@ -664,59 +691,60 @@ public class LogManagerImpl implements LogManager {
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
-            this.position = HEADER_SIZE;
+            this.position = WAL_HEADER_SIZE;
         }
 
         @Override
-        public byte[] next() {
-            if (position + RECORD_HEADER_SIZE > fileSize) {
+        public LogRecord next() {
+            if (position + WAL_RECORD_HEADER_SIZE > fileSize) {
                 return null;
             }
 
-            ByteBuffer header = ByteBuffer.allocate(RECORD_HEADER_SIZE);
+            long startLsn = position;
+            byte[] headerBytes = new byte[WAL_RECORD_HEADER_SIZE];
             try {
-                FileChannelUtil.readFully(channel, header, position);
+                FileChannelUtil.readFully(channel, ByteBuffer.wrap(headerBytes), position);
             } catch (IOException e) {
                 Panic.of(e);
             }
-            header.flip();
+            ByteReader reader = ByteReader.wrap(headerBytes);
+            int payloadLength = reader.readInt();
+            int checksum = reader.readInt();
+            long endLsn = reader.readLong();
+            reader.requireFullyConsumed();
+            long recordEnd = position + WAL_RECORD_HEADER_SIZE + payloadLength;
 
-            int payloadSize = header.getInt();
-            int checksum = header.getInt();
-            long endLsn = header.getLong();
-            long recordEnd = position + RECORD_HEADER_SIZE + payloadSize;
-
-            if (payloadSize < 0
+            if (payloadLength < 0
                 || endLsn != recordEnd
                 || recordEnd > fileSize) {
                 return null;
             }
 
-            ByteBuffer data = ByteBuffer.allocate(payloadSize);
+            ByteBuffer data = ByteBuffer.allocate(payloadLength);
             try {
-                FileChannelUtil.readFully(channel, data, position + RECORD_HEADER_SIZE);
+                FileChannelUtil.readFully(channel, data, position + WAL_RECORD_HEADER_SIZE);
             } catch (IOException e) {
                 Panic.of(e);
             }
 
             byte[] payload = data.array();
-            int calc = calcRecordChecksum(endLsn, payload);
+            int calc = calcRecordChecksum(payloadLength, endLsn, payload);
             if (calc != checksum) {
                 return null;
             }
 
             position = recordEnd;
-            return payload;
+            return new LogRecord(startLsn, endLsn, payload);
         }
 
         @Override
         public void rewind() {
-            position = HEADER_SIZE;
+            position = WAL_HEADER_SIZE;
         }
 
         @Override
         public void seek(long lsn) {
-            position = Math.max(lsn, HEADER_SIZE);
+            position = Math.max(lsn, WAL_HEADER_SIZE);
         }
 
         @Override

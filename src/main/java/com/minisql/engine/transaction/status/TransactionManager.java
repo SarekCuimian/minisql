@@ -6,7 +6,9 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.util.Map;
 
+import com.minisql.engine.storage.wal.ActiveTransaction;
 import com.minisql.error.Panic;
 import com.minisql.engine.storage.io.FileChannelUtil;
 import com.minisql.error.Error;
@@ -20,6 +22,10 @@ public interface TransactionManager {
     boolean isAborted(long xid);
     void updateLastLsn(long xid, long lsn);
     long getLastLsn(long xid);
+    void markCommitting(long xid);
+    void markAborting(long xid);
+    Map<Long, ActiveTransaction> snapshotActiveTransactions();
+    void complete(long xid);
     void close();
 
     static TransactionManagerImpl create(String path) {

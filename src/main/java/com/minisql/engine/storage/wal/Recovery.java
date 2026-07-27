@@ -1,15 +1,12 @@
 package com.minisql.engine.storage.wal;
 
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 
-import com.minisql.engine.storage.codec.ByteSlice;
-import com.minisql.engine.storage.codec.ByteUtil;
-import com.minisql.engine.storage.codec.UidUtil;
 import com.minisql.engine.storage.page.DataPage;
+import com.minisql.engine.storage.page.DirtyPageTable;
 import com.minisql.engine.storage.page.Page;
 import com.minisql.engine.storage.page.PageCache;
 import com.minisql.engine.storage.record.PageRecord;
@@ -17,92 +14,13 @@ import com.minisql.engine.transaction.status.TransactionManager;
 import com.minisql.error.Panic;
 
 /**
- * 基于 WAL 执行 REDO 与 UNDO 的恢复协调器。
- *
- * <p>Update log 的布局为：
- * {@code [LogType][XID][UID][BeforeImage][AfterImage]}。</p>
- *
- * <p>Insert log 的布局为：
- * {@code [LogType][XID][PGNO][RecordOffset][RecordBytes]}。</p>
+ * 基于 WAL 执行 Analysis、repeat-history Redo 与 restartable Undo。
  */
 public final class Recovery {
-    private static final byte LOG_TYPE_INSERT = 0;
-    private static final byte LOG_TYPE_UPDATE = 1;
-
-    private static final int LOG_TYPE_OFFSET = 0;
-    private static final int XID_OFFSET = LOG_TYPE_OFFSET + 1;
-    private static final int UPDATE_UID_OFFSET = XID_OFFSET + Long.BYTES;
-    /** Update log 中 before image 与 after image 的公共起点。 */
-    private static final int UPDATE_IMAGE_OFFSET = UPDATE_UID_OFFSET + Long.BYTES;
-
-    private static final int INSERT_PGNO_OFFSET = XID_OFFSET + Long.BYTES;
-    /** Insert log 中记录页内位置字段的字节偏移。 */
-    private static final int INSERT_POSITION_OFFSET = INSERT_PGNO_OFFSET + Integer.BYTES;
-    /** Insert log 中完整 Record bytes 的起始位置。 */
-    private static final int INSERT_RECORD_OFFSET = INSERT_POSITION_OFFSET + Short.BYTES;
 
     private Recovery() {
     }
 
-    private enum RecoveryMode {
-        REDO,
-        UNDO
-    }
-
-    /**
-     * 解析后的 Insert log。
-     * recordBytes 是完整 physical record bytes，包含 Record header 与 payload。
-     */
-    private static final class InsertLogRecord {
-        /** 产生该日志的事务 XID。 */
-        final long xid;
-        /** 写入目标的 PGNO。 */
-        final int pgno;
-        /** Record 在 Page 中的起始位置。 */
-        final short recordOffset;
-        /** Insert 的完整 Record bytes；UNDO 时会将其标记为无效。 */
-        final byte[] recordBytes;
-
-        private InsertLogRecord(long xid, int pgno, short recordOffset, byte[] recordBytes) {
-            this.xid = xid;
-            this.pgno = pgno;
-            this.recordOffset = recordOffset;
-            this.recordBytes = recordBytes;
-        }
-    }
-
-    /**
-     * 解析后的 Update log。
-     * beforeImage 用于 UNDO，afterImage 用于 REDO，二者均为完整 physical record bytes。
-     */
-    private static final class UpdateLogRecord {
-        /** 产生该日志的事务 XID。 */
-        final long xid;
-        /** 被更新 Record 所在的 PGNO。 */
-        final int pgno;
-        /** Record 在 Page 中的起始位置。 */
-        final short recordOffset;
-        /** 更新前的完整 Record bytes，用于 UNDO。 */
-        final byte[] beforeImage;
-        /** 更新后的完整 Record bytes，用于 REDO。 */
-        final byte[] afterImage;
-
-        private UpdateLogRecord(
-                long xid,
-                int pgno,
-                short recordOffset,
-                byte[] beforeImage,
-                byte[] afterImage
-        ) {
-            this.xid = xid;
-            this.pgno = pgno;
-            this.recordOffset = recordOffset;
-            this.beforeImage = beforeImage;
-            this.afterImage = afterImage;
-        }
-    }
-
-    /** 执行恢复：裁剪无效页尾、REDO 非 active 事务，再 UNDO active 事务。 */
     public static void recover(
             TransactionManager transactionManager,
             LogManager logManager,
@@ -110,199 +28,714 @@ public final class Recovery {
     ) {
         System.out.println("Recovering...");
 
-        int maxPgno = findMaxLoggedPgno(logManager);
-        pageCache.trimBadTail(maxPgno);
-        System.out.println("Truncate to " + maxPgno + " pages.");
+        AnalysisResult analysis = analyze(transactionManager, logManager);
 
-        try (LogManager.LogReader reader = logManager.getReader()) {
-            redoNonActiveTransactions(transactionManager, reader, pageCache);
-        }
+        redo(logManager, pageCache, analysis.dirtyPageTable);
         System.out.println("Redo Transactions Over.");
 
-        try (LogManager.LogReader reader = logManager.getReader()) {
-            undoActiveTransactions(transactionManager, reader, pageCache);
-        }
+        undo(
+                transactionManager,
+                logManager,
+                pageCache,
+                analysis.activeTransactionTable
+        );
         System.out.println("Undo Transactions Over.");
         System.out.println("Recovery Over.");
     }
 
-    private static int findMaxLoggedPgno(LogManager logManager) {
-        int maxPgno = 0;
+    public static void undoTransaction(
+            TransactionManager transactionManager,
+            LogManager logManager,
+            PageCache pageCache,
+            long xid,
+            long lastLsn
+    ) {
+        ActiveTransactionTable activeTransactionTable =
+                new ActiveTransactionTable();
+        activeTransactionTable.add(
+                xid,
+                ActiveTransaction.Status.ABORTING,
+                lastLsn
+        );
+        undo(
+                transactionManager,
+                logManager,
+                pageCache,
+                activeTransactionTable
+        );
+    }
+
+    private static AnalysisResult analyze(
+            TransactionManager transactionManager,
+            LogManager logManager
+    ) {
+        DirtyPageTable dirtyPageTable = new DirtyPageTable();
+        ActiveTransactionTable activeTransactionTable =
+                new ActiveTransactionTable();
+
         try (LogManager.LogReader reader = logManager.getReader()) {
+            reader.seek(logManager.getCheckpointLsn());
+            CheckpointAccumulator checkpoint = null;
             while (true) {
-                byte[] logBytes = reader.next();
-                if (logBytes == null) {
+                LogRecord record = reader.next();
+                if (record == null) {
                     break;
                 }
-
-                int pgno = isInsertLog(logBytes)
-                        ? parseInsertLog(logBytes).pgno
-                        : parseUpdateLog(logBytes).pgno;
-                maxPgno = Math.max(maxPgno, pgno);
+                switch (record.getType()) {
+                    case BEGIN_CHECKPOINT:
+                        LogRecordCodec.decodeBeginCheckpoint(record.getPayload());
+                        checkpoint = new CheckpointAccumulator(record.getStartLsn());
+                        continue;
+                    case CHECKPOINT_DPT:
+                        requireCheckpoint(checkpoint, record)
+                                .add(LogRecordCodec.decodeCheckpointDpt(record.getPayload()));
+                        continue;
+                    case CHECKPOINT_ATT:
+                        requireCheckpoint(checkpoint, record)
+                                .add(LogRecordCodec.decodeCheckpointAtt(record.getPayload()));
+                        continue;
+                    case END_CHECKPOINT:
+                        CheckpointAccumulator completeCheckpoint =
+                                requireCheckpoint(checkpoint, record);
+                        completeCheckpoint.complete(
+                                LogRecordCodec.decodeEndCheckpoint(record.getPayload()),
+                                dirtyPageTable,
+                                activeTransactionTable
+                        );
+                        checkpoint = null;
+                        continue;
+                    default:
+                        break;
+                }
+                analyzeRecord(
+                        transactionManager,
+                        dirtyPageTable,
+                        activeTransactionTable,
+                        record
+                );
             }
         }
-        return maxPgno == 0 ? 1 : maxPgno;
-    }
 
-    /** 对崩溃时已非 active 的事务重放所有 WAL changes。 */
-    private static void redoNonActiveTransactions(
-            TransactionManager transactionManager,
-            LogManager.LogReader reader,
-            PageCache pageCache
-    ) {
-        while (true) {
-            byte[] logBytes = reader.next();
-            if (logBytes == null) {
-                break;
-            }
-
-            long xid = isInsertLog(logBytes)
-                    ? parseInsertLog(logBytes).xid
-                    : parseUpdateLog(logBytes).xid;
-            if (transactionManager.isActive(xid)) {
+        for (ActiveTransaction transaction
+                : activeTransactionTable.snapshot().values()) {
+            if (transaction.getStatus()
+                    != ActiveTransaction.Status.COMMITTING) {
                 continue;
             }
-
-            if (isInsertLog(logBytes)) {
-                replayInsertLog(pageCache, logBytes, RecoveryMode.REDO);
-            } else {
-                replayUpdateLog(pageCache, logBytes, RecoveryMode.REDO);
-            }
+            transactionManager.commit(transaction.getXid());
+            LogRecord endRecord = logManager.append(
+                    LogRecordCodec.encodeTransactionState(
+                            LogRecordType.END,
+                            transaction.getXid(),
+                            transaction.getLastLsn()
+                    )
+            );
+            logManager.flush(endRecord.getEndLsn());
+            transactionManager.complete(transaction.getXid());
+            activeTransactionTable.remove(transaction.getXid());
         }
+
+        return new AnalysisResult(dirtyPageTable, activeTransactionTable);
     }
 
-    /** 收集崩溃时仍 active 的事务日志，并以逆序执行 UNDO。 */
-    private static void undoActiveTransactions(
-            TransactionManager transactionManager,
-            LogManager.LogReader reader,
-            PageCache pageCache
+    private static CheckpointAccumulator requireCheckpoint(
+            CheckpointAccumulator checkpoint,
+            LogRecord record
     ) {
-        Map<Long, List<byte[]>> logsByXid = new HashMap<>();
-        while (true) {
-            byte[] logBytes = reader.next();
-            if (logBytes == null) {
+        if (checkpoint == null) {
+            throw new IllegalStateException(
+                    "Checkpoint record " + record.getType()
+                            + " has no preceding BEGIN_CHECKPOINT at LSN "
+                            + record.getStartLsn()
+            );
+        }
+        return checkpoint;
+    }
+
+    private static void analyzeRecord(
+            TransactionManager transactionManager,
+            DirtyPageTable dirtyPageTable,
+            ActiveTransactionTable activeTransactionTable,
+            LogRecord record
+    ) {
+        LogRecordType type = record.getType();
+        switch (type) {
+            case BEGIN: {
+                LogRecordCodec.TransactionStatePayload payload =
+                        LogRecordCodec.decodeTransactionState(record.getPayload());
+                activeTransactionTable.add(
+                        payload.getXid(),
+                        ActiveTransaction.Status.ACTIVE,
+                        record.getStartLsn()
+                );
                 break;
             }
-
-            long xid = isInsertLog(logBytes)
-                    ? parseInsertLog(logBytes).xid
-                    : parseUpdateLog(logBytes).xid;
-            if (transactionManager.isActive(xid)) {
-                logsByXid.computeIfAbsent(xid, ignored -> new ArrayList<>()).add(logBytes);
+            case INSERT: {
+                LogRecordCodec.InsertPayload payload =
+                        LogRecordCodec.decodeInsert(record.getPayload());
+                dirtyPageTable.mark(payload.getPageNumber(), record.getStartLsn());
+                updateLastLsn(
+                        activeTransactionTable,
+                        payload.getXid(),
+                        record.getStartLsn(),
+                        ActiveTransaction.Status.ACTIVE
+                );
+                break;
             }
+            case UPDATE: {
+                LogRecordCodec.UpdatePayload payload =
+                        LogRecordCodec.decodeUpdate(record.getPayload());
+                dirtyPageTable.mark(payload.getPageNumber(), record.getStartLsn());
+                updateLastLsn(
+                        activeTransactionTable,
+                        payload.getXid(),
+                        record.getStartLsn(),
+                        ActiveTransaction.Status.ACTIVE
+                );
+                break;
+            }
+            case CLR: {
+                LogRecordCodec.ClrPayload payload =
+                        LogRecordCodec.decodeClr(record.getPayload());
+                dirtyPageTable.mark(payload.getPageNumber(), record.getStartLsn());
+                updateLastLsn(
+                        activeTransactionTable,
+                        payload.getXid(),
+                        record.getStartLsn(),
+                        ActiveTransaction.Status.ABORTING
+                );
+                break;
+            }
+            case COMMIT: {
+                LogRecordCodec.TransactionStatePayload payload =
+                        LogRecordCodec.decodeTransactionState(record.getPayload());
+                activeTransactionTable.update(
+                        payload.getXid(),
+                        ActiveTransaction.Status.COMMITTING,
+                        record.getStartLsn()
+                );
+                if (!transactionManager.isCommitted(payload.getXid())) {
+                    transactionManager.commit(payload.getXid());
+                }
+                break;
+            }
+            case ABORT: {
+                LogRecordCodec.TransactionStatePayload payload =
+                        LogRecordCodec.decodeTransactionState(record.getPayload());
+                activeTransactionTable.update(
+                        payload.getXid(),
+                        ActiveTransaction.Status.ABORTING,
+                        record.getStartLsn()
+                );
+                break;
+            }
+            case END: {
+                LogRecordCodec.TransactionStatePayload payload =
+                        LogRecordCodec.decodeTransactionState(record.getPayload());
+                activeTransactionTable.remove(payload.getXid());
+                transactionManager.complete(payload.getXid());
+                break;
+            }
+            case BEGIN_CHECKPOINT:
+            case CHECKPOINT_DPT:
+            case CHECKPOINT_ATT:
+            case END_CHECKPOINT:
+                throw new IllegalStateException(
+                        "Checkpoint record must be handled by checkpoint accumulator"
+                );
+            default:
+                throw new IllegalStateException("Unhandled WAL record type: " + type);
+        }
+    }
+
+    private static void updateLastLsn(
+            ActiveTransactionTable activeTransactionTable,
+            long xid,
+            long lastLsn,
+            ActiveTransaction.Status defaultStatus
+    ) {
+        if (xid <= 0) {
+            return;
+        }
+        ActiveTransaction transaction =
+                activeTransactionTable.get(xid);
+        ActiveTransaction.Status status = transaction == null
+                ? defaultStatus
+                : transaction.getStatus();
+        activeTransactionTable.update(xid, status, lastLsn);
+    }
+
+    private static void redo(
+            LogManager logManager,
+            PageCache pageCache,
+            DirtyPageTable dirtyPageTable
+    ) {
+        long redoLsn = dirtyPageTable.getMinRecoveryLsn();
+        if (redoLsn == Long.MAX_VALUE) {
+            return;
         }
 
-        for (Map.Entry<Long, List<byte[]>> transactionLogs : logsByXid.entrySet()) {
-            List<byte[]> logBytesList = transactionLogs.getValue();
-            for (int index = logBytesList.size() - 1; index >= 0; index--) {
-                byte[] logBytes = logBytesList.get(index);
-                if (isInsertLog(logBytes)) {
-                    replayInsertLog(pageCache, logBytes, RecoveryMode.UNDO);
-                } else {
-                    replayUpdateLog(pageCache, logBytes, RecoveryMode.UNDO);
+        try (LogManager.LogReader reader = logManager.getReader()) {
+            reader.seek(redoLsn);
+            while (true) {
+                LogRecord record = reader.next();
+                if (record == null) {
+                    return;
+                }
+                if (!record.getType().isRedoablePageChange()) {
+                    continue;
+                }
+
+                int pageNumber = getPageNumber(record);
+                Long recoveryLsn = dirtyPageTable.getRecoveryLsn(pageNumber);
+                if (recoveryLsn == null || record.getStartLsn() < recoveryLsn) {
+                    continue;
+                }
+
+                switch (record.getType()) {
+                    case INSERT:
+                        replayInsert(pageCache, record);
+                        break;
+                    case UPDATE:
+                        replayUpdate(pageCache, record);
+                        break;
+                    case CLR:
+                        replayClr(pageCache, record);
+                        break;
+                    default:
+                        throw new IllegalStateException(
+                                "Unhandled redo record type: " + record.getType()
+                        );
                 }
             }
-            transactionManager.abort(transactionLogs.getKey());
         }
     }
 
-    /** 根据更新前后的 Record image 创建 Update WAL bytes。 */
-    public static byte[] newUpdateLogBytes(long xid, PageRecord record) {
-        byte[] beforeImage = record.getBeforeImage();
-        ByteSlice recordView = record.recordView();
-        byte[] afterImage = Arrays.copyOfRange(
-                recordView.bytes(),
-                recordView.offset(),
-                recordView.end()
+    private static void undo(
+            TransactionManager transactionManager,
+            LogManager logManager,
+            PageCache pageCache,
+            ActiveTransactionTable activeTransactionTable
+    ) {
+        PriorityQueue<UndoTask> tasks = new PriorityQueue<>(
+                Comparator.comparingLong(UndoTask::getNextLsn).reversed()
         );
 
-        byte[] logBytes = new byte[UPDATE_IMAGE_OFFSET + beforeImage.length + afterImage.length];
-        logBytes[LOG_TYPE_OFFSET] = LOG_TYPE_UPDATE;
-        ByteUtil.putLong(logBytes, XID_OFFSET, xid);
-        ByteUtil.putLong(logBytes, UPDATE_UID_OFFSET, record.getUid());
-        System.arraycopy(beforeImage, 0, logBytes, UPDATE_IMAGE_OFFSET, beforeImage.length);
-        System.arraycopy(afterImage, 0, logBytes, UPDATE_IMAGE_OFFSET + beforeImage.length, afterImage.length);
-        return logBytes;
-    }
-
-    /** 根据页内写入位置与完整 Record bytes 创建 Insert WAL bytes。 */
-    public static byte[] newInsertLogBytes(long xid, Page page, byte[] recordBytes) {
-        byte[] logBytes = new byte[INSERT_RECORD_OFFSET + recordBytes.length];
-        logBytes[LOG_TYPE_OFFSET] = LOG_TYPE_INSERT;
-        ByteUtil.putLong(logBytes, XID_OFFSET, xid);
-        ByteUtil.putInt(logBytes, INSERT_PGNO_OFFSET, page.getPageNumber());
-        ByteUtil.putShort(logBytes, INSERT_POSITION_OFFSET, DataPage.getFso(page));
-        System.arraycopy(recordBytes, 0, logBytes, INSERT_RECORD_OFFSET, recordBytes.length);
-        return logBytes;
-    }
-
-    private static boolean isInsertLog(byte[] logBytes) {
-        return logBytes[LOG_TYPE_OFFSET] == LOG_TYPE_INSERT;
-    }
-
-    private static UpdateLogRecord parseUpdateLog(byte[] logBytes) {
-        long xid = ByteUtil.getLong(logBytes, XID_OFFSET);
-        long uid = ByteUtil.getLong(logBytes, UPDATE_UID_OFFSET);
-        short recordOffset = UidUtil.getOffset(uid);
-        int pgno = UidUtil.getPgno(uid);
-        int imageLength = (logBytes.length - UPDATE_IMAGE_OFFSET) / 2;
-        byte[] beforeImage = Arrays.copyOfRange(
-                logBytes,
-                UPDATE_IMAGE_OFFSET,
-                UPDATE_IMAGE_OFFSET + imageLength
-        );
-        byte[] afterImage = Arrays.copyOfRange(
-                logBytes,
-                UPDATE_IMAGE_OFFSET + imageLength,
-                UPDATE_IMAGE_OFFSET + imageLength * 2
-        );
-        return new UpdateLogRecord(xid, pgno, recordOffset, beforeImage, afterImage);
-    }
-
-    private static InsertLogRecord parseInsertLog(byte[] logBytes) {
-        long xid = ByteUtil.getLong(logBytes, XID_OFFSET);
-        int pgno = ByteUtil.getInt(logBytes, INSERT_PGNO_OFFSET);
-        short recordOffset = ByteUtil.getShort(logBytes, INSERT_POSITION_OFFSET);
-        byte[] recordBytes = Arrays.copyOfRange(logBytes, INSERT_RECORD_OFFSET, logBytes.length);
-        return new InsertLogRecord(xid, pgno, recordOffset, recordBytes);
-    }
-
-    private static void replayUpdateLog(PageCache pageCache, byte[] logBytes, RecoveryMode mode) {
-        UpdateLogRecord logRecord = parseUpdateLog(logBytes);
-        byte[] recordBytes = mode == RecoveryMode.REDO
-                ? logRecord.afterImage
-                : logRecord.beforeImage;
-
-        Page page;
-        try {
-            page = pageCache.getPage(logRecord.pgno);
-        } catch (Exception exception) {
-            Panic.of(exception);
-            return;
-        }
-        try {
-            DataPage.recoverUpdate(page, recordBytes, logRecord.recordOffset);
-        } finally {
-            page.release();
-        }
-    }
-
-    private static void replayInsertLog(PageCache pageCache, byte[] logBytes, RecoveryMode mode) {
-        InsertLogRecord logRecord = parseInsertLog(logBytes);
-        Page page;
-        try {
-            page = pageCache.getPage(logRecord.pgno);
-        } catch (Exception exception) {
-            Panic.of(exception);
-            return;
-        }
-        try {
-            if (mode == RecoveryMode.UNDO) {
-                PageRecord.markInvalid(logRecord.recordBytes);
+        for (ActiveTransaction transaction
+                : activeTransactionTable.snapshot().values()) {
+            if (transaction.getStatus() == ActiveTransaction.Status.COMMITTING) {
+                continue;
             }
-            DataPage.recoverInsert(page, logRecord.recordBytes, logRecord.recordOffset);
+            if (transaction.getStatus() == ActiveTransaction.Status.ACTIVE) {
+                LogRecord abortRecord = logManager.append(
+                        LogRecordCodec.encodeTransactionState(
+                                LogRecordType.ABORT,
+                                transaction.getXid(),
+                                transaction.getLastLsn()
+                        )
+                );
+                activeTransactionTable.update(
+                        transaction.getXid(),
+                        ActiveTransaction.Status.ABORTING,
+                        abortRecord.getStartLsn()
+                );
+                tasks.add(new UndoTask(
+                        transaction.getXid(),
+                        transaction.getLastLsn()
+                ));
+            } else {
+                tasks.add(new UndoTask(
+                        transaction.getXid(),
+                        transaction.getLastLsn()
+                ));
+            }
+        }
+
+        try (LogManager.LogReader reader = logManager.getReader()) {
+            while (!tasks.isEmpty()) {
+                UndoTask task = tasks.remove();
+                LogRecord record = readRecord(reader, task.nextLsn);
+                long nextLsn = undoRecord(
+                        logManager,
+                        pageCache,
+                        activeTransactionTable,
+                        task.xid,
+                        record
+                );
+                if (nextLsn == LogRecord.NO_LSN) {
+                    finishUndo(
+                            transactionManager,
+                            logManager,
+                            activeTransactionTable,
+                            task.xid
+                    );
+                } else {
+                    tasks.add(new UndoTask(task.xid, nextLsn));
+                }
+            }
+        }
+    }
+
+    private static long undoRecord(
+            LogManager logManager,
+            PageCache pageCache,
+            ActiveTransactionTable activeTransactionTable,
+            long xid,
+            LogRecord record
+    ) {
+        switch (record.getType()) {
+            case BEGIN:
+                return LogRecord.NO_LSN;
+            case ABORT:
+                return requireTransactionState(record, xid).getPrevLsn();
+            case CLR:
+                return requireClr(record, xid).getUndoNextLsn();
+            case INSERT: {
+                LogRecordCodec.InsertPayload payload =
+                        LogRecordCodec.decodeInsert(record.getPayload());
+                requireXid(xid, payload.getXid(), record);
+                byte[] compensationImage = payload.getRecordBytes();
+                PageRecord.markInvalid(compensationImage);
+                return appendClrAndApply(
+                        logManager,
+                        pageCache,
+                        activeTransactionTable,
+                        xid,
+                        payload.getPrevLsn(),
+                        payload.getPageNumber(),
+                        payload.getRecordOffsetInPage(),
+                        compensationImage
+                );
+            }
+            case UPDATE: {
+                LogRecordCodec.UpdatePayload payload =
+                        LogRecordCodec.decodeUpdate(record.getPayload());
+                requireXid(xid, payload.getXid(), record);
+                return appendClrAndApply(
+                        logManager,
+                        pageCache,
+                        activeTransactionTable,
+                        xid,
+                        payload.getPrevLsn(),
+                        payload.getPageNumber(),
+                        payload.getRecordOffsetInPage(),
+                        payload.getBeforeImage()
+                );
+            }
+            default:
+                throw new IllegalStateException(
+                        "Record type cannot be undone: " + record.getType()
+                );
+        }
+    }
+
+    private static long appendClrAndApply(
+            LogManager logManager,
+            PageCache pageCache,
+            ActiveTransactionTable activeTransactionTable,
+            long xid,
+            long undoNextLsn,
+            int pageNumber,
+            short recordOffsetInPage,
+            byte[] compensationImage
+    ) {
+        ActiveTransaction transaction =
+                activeTransactionTable.get(xid);
+        if (transaction == null) {
+            throw new IllegalStateException("Missing active transaction: " + xid);
+        }
+        byte[] clrPayload = LogRecordCodec.encodeClr(
+                xid,
+                transaction.getLastLsn(),
+                undoNextLsn,
+                pageNumber,
+                recordOffsetInPage,
+                compensationImage
+        );
+        LogRecord clrRecord = logManager.append(clrPayload);
+        activeTransactionTable.update(
+                xid,
+                ActiveTransaction.Status.ABORTING,
+                clrRecord.getStartLsn()
+        );
+        applyPageImage(
+                pageCache,
+                clrRecord,
+                pageNumber,
+                recordOffsetInPage,
+                compensationImage
+        );
+        return undoNextLsn;
+    }
+
+    private static void finishUndo(
+            TransactionManager transactionManager,
+            LogManager logManager,
+            ActiveTransactionTable activeTransactionTable,
+            long xid
+    ) {
+        ActiveTransaction transaction =
+                activeTransactionTable.get(xid);
+        if (transaction == null) {
+            return;
+        }
+        LogRecord endRecord = logManager.append(
+                LogRecordCodec.encodeTransactionState(
+                        LogRecordType.END,
+                        xid,
+                        transaction.getLastLsn()
+                )
+        );
+        logManager.flush(endRecord.getEndLsn());
+        transactionManager.abort(xid);
+        transactionManager.complete(xid);
+        activeTransactionTable.remove(xid);
+    }
+
+    private static LogRecord readRecord(LogManager.LogReader reader, long startLsn) {
+        reader.seek(startLsn);
+        LogRecord record = reader.next();
+        if (record == null || record.getStartLsn() != startLsn) {
+            throw new IllegalStateException("Missing WAL record at LSN " + startLsn);
+        }
+        return record;
+    }
+
+    private static LogRecordCodec.TransactionStatePayload requireTransactionState(
+            LogRecord record,
+            long expectedXid
+    ) {
+        LogRecordCodec.TransactionStatePayload payload =
+                LogRecordCodec.decodeTransactionState(record.getPayload());
+        requireXid(expectedXid, payload.getXid(), record);
+        return payload;
+    }
+
+    private static LogRecordCodec.ClrPayload requireClr(
+            LogRecord record,
+            long expectedXid
+    ) {
+        LogRecordCodec.ClrPayload payload =
+                LogRecordCodec.decodeClr(record.getPayload());
+        requireXid(expectedXid, payload.getXid(), record);
+        return payload;
+    }
+
+    private static void requireXid(
+            long expectedXid,
+            long actualXid,
+            LogRecord record
+    ) {
+        if (actualXid != expectedXid) {
+            throw new IllegalStateException(
+                    "WAL chain for XID " + expectedXid
+                            + " points to XID " + actualXid
+                            + " at LSN " + record.getStartLsn()
+            );
+        }
+    }
+
+    private static int getPageNumber(LogRecord record) {
+        switch (record.getType()) {
+            case INSERT:
+                return LogRecordCodec.decodeInsert(record.getPayload()).getPageNumber();
+            case UPDATE:
+                return LogRecordCodec.decodeUpdate(record.getPayload()).getPageNumber();
+            case CLR:
+                return LogRecordCodec.decodeClr(record.getPayload()).getPageNumber();
+            default:
+                throw new IllegalArgumentException(
+                        "Record does not modify a Page: " + record.getType()
+                );
+        }
+    }
+
+    private static void replayInsert(PageCache pageCache, LogRecord record) {
+        LogRecordCodec.InsertPayload payload =
+                LogRecordCodec.decodeInsert(record.getPayload());
+        applyPageImage(
+                pageCache,
+                record,
+                payload.getPageNumber(),
+                payload.getRecordOffsetInPage(),
+                payload.getRecordBytes()
+        );
+    }
+
+    private static void replayUpdate(PageCache pageCache, LogRecord record) {
+        LogRecordCodec.UpdatePayload payload =
+                LogRecordCodec.decodeUpdate(record.getPayload());
+        applyPageImage(
+                pageCache,
+                record,
+                payload.getPageNumber(),
+                payload.getRecordOffsetInPage(),
+                payload.getAfterImage()
+        );
+    }
+
+    private static void replayClr(PageCache pageCache, LogRecord record) {
+        LogRecordCodec.ClrPayload payload =
+                LogRecordCodec.decodeClr(record.getPayload());
+        applyPageImage(
+                pageCache,
+                record,
+                payload.getPageNumber(),
+                payload.getRecordOffsetInPage(),
+                payload.getCompensationImage()
+        );
+    }
+
+    private static void applyPageImage(
+            PageCache pageCache,
+            LogRecord record,
+            int pageNumber,
+            short recordOffsetInPage,
+            byte[] recordBytes
+    ) {
+        Page page;
+        try {
+            page = pageCache.getPage(pageNumber);
+        } catch (Exception exception) {
+            Panic.of(exception);
+            return;
+        }
+        try {
+            page.wLock();
+            try {
+                if (page.getPageLsn() >= record.getEndLsn()) {
+                    return;
+                }
+                DataPage.recoverInsert(page, recordBytes, recordOffsetInPage);
+                page.setPageLsn(record.getEndLsn());
+                pageCache.markDirtyPage(pageNumber, record.getStartLsn());
+            } finally {
+                page.wUnlock();
+            }
         } finally {
             page.release();
+        }
+    }
+
+    private static final class AnalysisResult {
+        private final DirtyPageTable dirtyPageTable;
+        private final ActiveTransactionTable activeTransactionTable;
+
+        private AnalysisResult(
+                DirtyPageTable dirtyPageTable,
+                ActiveTransactionTable activeTransactionTable
+        ) {
+            this.dirtyPageTable = dirtyPageTable;
+            this.activeTransactionTable = activeTransactionTable;
+        }
+    }
+
+    private static final class UndoTask {
+        private final long xid;
+        private final long nextLsn;
+
+        private UndoTask(long xid, long nextLsn) {
+            this.xid = xid;
+            this.nextLsn = nextLsn;
+        }
+
+        private long getNextLsn() {
+            return nextLsn;
+        }
+    }
+
+    private static final class CheckpointAccumulator {
+        private final long beginCheckpointLsn;
+        private final Map<Integer, LogRecordCodec.CheckpointDptPayload> dptChunks =
+                new HashMap<>();
+        private final Map<Integer, LogRecordCodec.CheckpointAttPayload> attChunks =
+                new HashMap<>();
+
+        private CheckpointAccumulator(long beginCheckpointLsn) {
+            this.beginCheckpointLsn = beginCheckpointLsn;
+        }
+
+        private void add(LogRecordCodec.CheckpointDptPayload chunk) {
+            requireOwner(chunk.getBeginCheckpointLsn());
+            if (dptChunks.put(chunk.getChunkIndex(), chunk) != null) {
+                throw new IllegalStateException(
+                        "Duplicate DPT checkpoint chunk index: "
+                                + chunk.getChunkIndex()
+                );
+            }
+        }
+
+        private void add(LogRecordCodec.CheckpointAttPayload chunk) {
+            requireOwner(chunk.getBeginCheckpointLsn());
+            if (attChunks.put(chunk.getChunkIndex(), chunk) != null) {
+                throw new IllegalStateException(
+                        "Duplicate ATT checkpoint chunk index: "
+                                + chunk.getChunkIndex()
+                );
+            }
+        }
+
+        private void complete(
+                LogRecordCodec.EndCheckpointPayload end,
+                DirtyPageTable dirtyPageTable,
+                ActiveTransactionTable activeTransactionTable
+        ) {
+            requireOwner(end.getBeginCheckpointLsn());
+            requireCompleteChunkRange(dptChunks, end.getDptChunkCount(), "DPT");
+            requireCompleteChunkRange(attChunks, end.getAttChunkCount(), "ATT");
+
+            for (int index = 0; index < end.getDptChunkCount(); index++) {
+                for (Map.Entry<Integer, Long> entry
+                        : dptChunks.get(index).getEntries().entrySet()) {
+                    dirtyPageTable.mark(entry.getKey(), entry.getValue());
+                }
+            }
+            for (int index = 0; index < end.getAttChunkCount(); index++) {
+                for (ActiveTransaction checkpointTransaction
+                        : attChunks.get(index).getEntries().values()) {
+                    ActiveTransaction analyzedTransaction =
+                            activeTransactionTable.get(checkpointTransaction.getXid());
+                    if (analyzedTransaction == null
+                            || checkpointTransaction.getLastLsn()
+                            > analyzedTransaction.getLastLsn()) {
+                        activeTransactionTable.update(
+                                checkpointTransaction.getXid(),
+                                checkpointTransaction.getStatus(),
+                                checkpointTransaction.getLastLsn()
+                        );
+                    }
+                }
+            }
+        }
+
+        private void requireOwner(long actualBeginCheckpointLsn) {
+            if (actualBeginCheckpointLsn != beginCheckpointLsn) {
+                throw new IllegalStateException(
+                        "Checkpoint chunk belongs to BEGIN_CHECKPOINT "
+                                + actualBeginCheckpointLsn
+                                + " but expected " + beginCheckpointLsn
+                );
+            }
+        }
+
+        private static void requireCompleteChunkRange(
+                Map<Integer, ?> chunks,
+                int expectedCount,
+                String name
+        ) {
+            if (chunks.size() != expectedCount) {
+                throw new IllegalStateException(
+                        name + " checkpoint chunk count mismatch: expected "
+                                + expectedCount + " but found " + chunks.size()
+                );
+            }
+            for (int index = 0; index < expectedCount; index++) {
+                if (!chunks.containsKey(index)) {
+                    throw new IllegalStateException(
+                            "Missing " + name + " checkpoint chunk index " + index
+                    );
+                }
+            }
         }
     }
 }

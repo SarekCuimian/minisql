@@ -9,7 +9,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Condition;
@@ -20,6 +19,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.minisql.engine.cache.AbstractCache;
 import com.minisql.engine.storage.wal.LogManager;
+import com.minisql.engine.storage.wal.CheckpointManager;
 import com.minisql.engine.storage.page.Page;
 import com.minisql.engine.storage.page.CachedPage;
 import com.minisql.engine.storage.io.FileChannelUtil;
@@ -49,13 +49,14 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
     private final Lock forceLock;
     private final AtomicInteger pageNumberCounter;
 
-    private final DirtyPageTracker dirtyPageTracker = new DirtyPageTracker();
+    private final DirtyPageTable dirtyPageTable = new DirtyPageTable();
     private final AtomicBoolean cleanerStarted = new AtomicBoolean(false);
     private volatile boolean cleanerRunning;
     private Thread pageCleaner;
 
     private volatile boolean closing;
     private volatile LogManager logManager;
+    private volatile CheckpointManager checkpointManager;
 
     private final ReentrantLock cleanerLock = new ReentrantLock();
     private final Condition hasDirtyPage = cleanerLock.newCondition();
@@ -86,6 +87,11 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         this.logManager = logManager;
         // 启动 PageCleaner 线程
         startPageCleaner();
+    }
+
+    @Override
+    public void setCheckpointManager(CheckpointManager checkpointManager) {
+        this.checkpointManager = checkpointManager;
     }
 
     // Public API
@@ -119,8 +125,8 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
 
     /** 持久化 MetaPage */
     @Override
-    public void persistPageOne(Page pg) {
-        persist(pg);
+    public void persistMetaPage(Page page) {
+        persist(page);
     }
 
     public void trimBadTail(int maxPgno) {
@@ -161,9 +167,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
             for (int pgno = 2; pgno <= pageCount; pgno++) {
                 buf.clear();
                 FileChannelUtil.readFully(fc, buf, getPageOffset(pgno));
-                short fso = buf.getShort(0);
-                int free = PAGE_SIZE - (int) fso;
-                map.put(pgno, free);
+                map.put(pgno, DataPage.getFreeSpaceSize(buf.array()));
             }
         } catch (IOException e) {
             Panic.of(e);
@@ -215,7 +219,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
 
     @Override
     public void markDirtyPage(int pgno, long recLsn) {
-        boolean firstDirtied = dirtyPageTracker.mark(pgno, recLsn);
+        boolean firstDirtied = dirtyPageTable.mark(pgno, recLsn);
         // 当第一次页变脏时候触发
         if (firstDirtied) {
             cleanerLock.lock();
@@ -225,6 +229,11 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
                 cleanerLock.unlock();
             }
         }
+    }
+
+    @Override
+    public Map<Integer, Long> snapshotDirtyPages() {
+        return dirtyPageTable.snapshot();
     }
 
     /** 启动 PageCleaner 线程 */
@@ -253,13 +262,20 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
                 Thread.currentThread().interrupt();
             }
         }
+        // A clean close must persist every tracked dirty page even if the
+        // background cleaner had not consumed the final signal yet.
+        PageCleaner finalCleaner = new PageCleaner();
+        List<PageSnapshot> snapshots = new ArrayList<>(MAX_PAGES_PER_BATCH);
+        while (!dirtyPageTable.isEmpty()) {
+            finalCleaner.batchFlush(snapshots);
+        }
     }
 
 
     private final class PageCleaner implements Runnable {
         @Override
         public void run() {
-            List<pageSnapshot> candidates = new ArrayList<>(MAX_PAGES_PER_BATCH);
+            List<PageSnapshot> candidates = new ArrayList<>(MAX_PAGES_PER_BATCH);
             while (cleanerRunning) {
                 if (!awaitDirtyPages()) {
                     return;
@@ -269,7 +285,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
                 } catch (Exception e) {
                     Panic.of(e);
                 }
-                if (!dirtyPageTracker.isEmpty()) {
+                if (!dirtyPageTable.isEmpty()) {
                     try {
                         Thread.sleep(FLUSH_INTERVAL_MS);
                     } catch (InterruptedException e) {
@@ -285,7 +301,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         private boolean awaitDirtyPages() {
             cleanerLock.lock();
             try {
-                while (cleanerRunning && dirtyPageTracker.isEmpty()) {
+                while (cleanerRunning && dirtyPageTable.isEmpty()) {
                     hasDirtyPage.await();
                 }
                 return cleanerRunning;
@@ -298,15 +314,19 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         }
 
         /** 批量刷脏页 */
-        private void batchFlush(List<pageSnapshot> snapshots) {
+        private void batchFlush(List<PageSnapshot> snapshots) {
             snapshots.clear();
-            List<DirtyPage> pages = dirtyPageTracker.getBatchDirtyPages(MAX_PAGES_PER_BATCH);
+            List<DirtyPageTable.DirtyPage> pages =
+                    dirtyPageTable.getBatch(MAX_PAGES_PER_BATCH);
             int flushedPages = 0;
-            for (DirtyPage page : pages) {
+            for (DirtyPageTable.DirtyPage page : pages) {
                 if (flushedPages >= MAX_PAGES_PER_BATCH) {
                     break;
                 }
-                pageSnapshot candidate = flushPage(page.pgno, page.recLsn);
+                PageSnapshot candidate = flushPage(
+                        page.getPageNumber(),
+                        page.getRecoveryLsn()
+                );
                 if (candidate != null) {
                     snapshots.add(candidate);
                     flushedPages++;
@@ -320,7 +340,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
                 } finally {
                     accessLock.readLock().unlock();
                 }
-                for (pageSnapshot snapshot : snapshots) {
+                for (PageSnapshot snapshot : snapshots) {
                     // 比较页快照是否有更新，若无更新，则标记页为干净
                     compareAndClean(snapshot);
                 }
@@ -329,12 +349,12 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         }
     }
 
-    private static final class pageSnapshot {
+    private static final class PageSnapshot {
         final int pgno;
         final long pageLsn;
         final long recLsn;
 
-        pageSnapshot(int pgno, long pageLsn, long recLsn) {
+        PageSnapshot(int pgno, long pageLsn, long recLsn) {
             this.pgno = pgno;
             this.pageLsn = pageLsn;
             this.recLsn = recLsn;
@@ -347,7 +367,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
      * @param recLsn 使干净页首次变脏的日志起始 LSN
      * @return 页快照
      */
-    private pageSnapshot flushPage(int pgno, long recLsn) {
+    private PageSnapshot flushPage(int pgno, long recLsn) {
         // Avoid LRU touch during background flush.
         Page pg = lookup(pgno);
         if (pg == null) {
@@ -360,7 +380,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         }
     }
 
-    private pageSnapshot writePageSnapshot(Page pg, long recLsn) {
+    private PageSnapshot writePageSnapshot(Page pg, long recLsn) {
         int pgno = pg.getPageNumber();
         while (true) {
             long snapshotPageLsn;
@@ -370,7 +390,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
             pg.wLock();
             try {
                 if (!pg.isDirty()) {
-                    dirtyPageTracker.remove(pgno, recLsn);
+                    dirtyPageTable.remove(pgno, recLsn);
                     return null;
                 }
                 snapshotPageLsn = pg.getPageLsn();
@@ -401,23 +421,23 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
                 accessLock.readLock().unlock();
             }
             
-            return new pageSnapshot(pgno, snapshotPageLsn, recLsn);
+            return new PageSnapshot(pgno, snapshotPageLsn, recLsn);
         }
     }
 
     /** 比较页快照，若无更新，则从 DPT 中移除并标记页为干净， */
-    private void compareAndClean(pageSnapshot snapshot) {
+    private void compareAndClean(PageSnapshot snapshot) {
         Page pg = lookup(snapshot.pgno);
         if (pg == null) return;
         pg.wLock();
         try {
             if (pg.isDirty() && pg.getPageLsn() == snapshot.pageLsn) {
                 pg.setDirty(false);
-                dirtyPageTracker.remove(snapshot.pgno, snapshot.recLsn);
+                dirtyPageTable.remove(snapshot.pgno, snapshot.recLsn);
                 return;
             }
             if (!pg.isDirty()) {
-                dirtyPageTracker.remove(snapshot.pgno, snapshot.recLsn);
+                dirtyPageTable.remove(snapshot.pgno, snapshot.recLsn);
             }
         } finally {
             pg.wUnlock();
@@ -427,10 +447,10 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
 
     /** 更新 checkpoint */
     private void updateCheckpoint() {
-        long minRecLsn = dirtyPageTracker.getMinRecLsn();
-        long flushedLsn = logManager.getFlushedLsn();
-        long checkpoint = (minRecLsn == Long.MAX_VALUE) ? flushedLsn : Math.min(minRecLsn, flushedLsn);
-        logManager.setCheckpointLsn(checkpoint);
+        CheckpointManager manager = checkpointManager;
+        if (manager != null) {
+            manager.checkpoint();
+        }
     }
 
     // =========================
@@ -502,114 +522,4 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         }
     }
 
-    private static final class DirtyPage {
-        final int pgno;
-        final long recLsn;
-
-        DirtyPage(int pgno, long recLsn) {
-            this.pgno = pgno;
-            this.recLsn = recLsn;
-        }
-    }
-
-    private static final class DirtyPageTracker {
-        private final ReentrantLock lock = new ReentrantLock();
-        /** 按 page number 索引 dirty page */
-        private final HashMap<Integer, DirtyPage> index = new HashMap<>();
-        /** 按 recovery LSN 升序保存 dirty page */
-        private final TreeMap<Long, DirtyPage> order = new TreeMap<>();
-
-        /**
-         * 标记 dirty page
-         * @param pgno page number
-         * @param recLsn recovery LSN
-         * @return 是否添加成功
-         */
-        boolean mark(int pgno, long recLsn) {
-            lock.lock();
-            try {
-                if (index.containsKey(pgno) || order.containsKey(recLsn)) {
-                    return false;
-                }
-                DirtyPage page = new DirtyPage(pgno, recLsn);
-                index.put(pgno, page);
-                order.put(recLsn, page);
-                return true;
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        /**
-         * 移除 dirty page
-         * @param pgno page number
-         * @param recLsn recovery LSN
-         */
-        void remove(int pgno, long recLsn) {
-            lock.lock();
-            try {
-                DirtyPage cur = index.get(pgno);
-                if (cur == null || cur.recLsn != recLsn) {
-                    return;
-                }
-                index.remove(pgno);
-                order.remove(cur.recLsn);
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        /**
-         * 获取最小的 recovery LSN
-         * @return 最小的 recovery LSN
-         */
-        long getMinRecLsn() {
-            lock.lock();
-            try {
-                return order.isEmpty() ? Long.MAX_VALUE : order.firstKey();
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        /**
-         * 获取 dirty page list
-         * @param max 单个批次最大数量
-         * @return dirty page
-         */
-        List<DirtyPage> getBatchDirtyPages(int max) {
-            List<DirtyPage> list = new ArrayList<>();
-            if (max <= 0) {
-                return list;
-            }
-            lock.lock();
-            try {
-                if (order.isEmpty()) {
-                    return list;
-                }
-                for (DirtyPage page : order.values()) {
-                    list.add(page);
-                    if (list.size() >= max) {
-                        return list;
-                    }
-                }
-                return list;
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        /**
-         * DPT 是否为空
-         * @return 是否为空
-         */
-        boolean isEmpty() {
-            lock.lock();
-            try {
-                return index.isEmpty();
-            } finally {
-                lock.unlock();
-            }
-        }
-    }
 }

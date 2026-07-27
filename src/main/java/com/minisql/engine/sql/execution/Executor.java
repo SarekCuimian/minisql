@@ -1,11 +1,11 @@
 package com.minisql.engine.sql.execution;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import com.minisql.engine.database.DatabaseContext;
 import com.minisql.engine.database.DatabaseManager;
 
-import org.checkerframework.checker.units.qual.s;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -92,9 +92,12 @@ public class Executor {
      * @throws Exception SQL 执行过程中出现的异常
      */
     public ExecutionResult execute(byte[] sql) throws Exception {
-        String sqlLog = new String(sql);
-        sqlLog.replace("\r", "").replace("\n", "");
-        LOGGER.info("[client={}] Execute: {}", clientId, sqlLog);
+        if (LOGGER.isTraceEnabled()) {
+            String sqlLog = new String(sql, StandardCharsets.UTF_8)
+                    .replace("\r", "")
+                    .replace("\n", " ");
+            LOGGER.trace("[client={}] Execute: {}", clientId, sqlLog);
+        }
 
         Statement stat = Parser.parse(sql);
 
@@ -164,12 +167,21 @@ public class Executor {
 
         TableManager tbm = getTableManager();
         boolean tmpTransaction = false;
+        boolean tmpReadOnlyTransaction = false;
         Exception e = null;
 
         // 自动开始临时事务（如果当前不在事务中）
         if(xid == 0) {
             tmpTransaction = true;
-            xid = tbm.begin(new Begin());
+            tmpReadOnlyTransaction = isQueryStatement(stat);
+            /*
+             * 独立查询只需要一个 MVCC read view，不会产生需要崩溃恢复的修改。
+             * 使用进程内只读事务可避免为每次 SELECT 强制写 XID 文件和 WAL。
+             * 显式事务仍走普通路径，以保留用户选择的隔离级别与一致性语义。
+             */
+            xid = tmpReadOnlyTransaction
+                    ? tbm.beginReadOnly()
+                    : tbm.begin(new Begin());
         }
 
         long start = System.nanoTime();
@@ -204,7 +216,10 @@ public class Executor {
             // 自动处理临时事务（成功 → commit，失败 → abort）
             if(tmpTransaction) {
                 long currentXid = xid;
-                if(e != null) {
+                if (tmpReadOnlyTransaction) {
+                    // 只读事务没有修改，不需要 COMMIT/ABORT WAL。
+                    tbm.endReadOnly(currentXid);
+                } else if(e != null) {
                     if(currentXid != 0) {
                         tbm.abort(currentXid);
                     }

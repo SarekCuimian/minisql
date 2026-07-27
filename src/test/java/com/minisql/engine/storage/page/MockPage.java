@@ -52,12 +52,12 @@ public class MockPage implements Page {
 
     @Override
     public void setPageLsn(long pageLsn) {
-
+        PageHeader.setPageLsn(data, pageLsn);
     }
 
     @Override
     public long getPageLsn() {
-        return 0;
+        return PageHeader.getPageLsn(data);
     }
 
     @Override

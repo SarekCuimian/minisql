@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import com.minisql.engine.storage.wal.LogManager;
+import com.minisql.engine.storage.wal.LogRecord;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -184,17 +185,18 @@ public class PageCacheTest {
                 byte[] newData = RandomUtil.randomBytes(PageCache.PAGE_SIZE);
                 
                 pg.wLock();
-                long[] lsn = lgm2.log(new byte[] {1});
-                pc2.markDirtyPage(pgno, lsn[LogManager.START_LSN_INDEX]);
+                LogRecord logRecord = lgm2.append(new byte[] {1});
+                pc2.markDirtyPage(pgno, logRecord.getStartLsn());
                 mpg.setDirty(true);
                 for(int j = 0; j < PageCache.PAGE_SIZE; j ++) {
                     mpg.getBytes()[j] = newData[j];
                 }
+                mpg.setPageLsn(logRecord.getEndLsn());
                 pg.setDirty(true);
                 for(int j = 0; j < PageCache.PAGE_SIZE; j ++) {
                     pg.getBytes()[j] = newData[j];
                 }
-                pg.setPageLsn(lsn[LogManager.END_LSN_INDEX]);
+                pg.setPageLsn(logRecord.getEndLsn());
                 pg.wUnlock();
                 pg.release();
             }

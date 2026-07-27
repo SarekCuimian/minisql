@@ -9,7 +9,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import com.minisql.engine.storage.record.RecordManager;
+import com.minisql.engine.storage.record.PageRecordManager;
 import com.minisql.engine.sql.ast.statement.Begin;
 import com.minisql.engine.sql.ast.statement.Create;
 import com.minisql.engine.sql.ast.statement.Delete;
@@ -19,6 +19,7 @@ import com.minisql.engine.sql.ast.statement.Insert;
 import com.minisql.engine.sql.ast.statement.Select;
 import com.minisql.engine.sql.ast.statement.Show;
 import com.minisql.engine.sql.ast.statement.Update;
+import com.minisql.engine.storage.codec.ByteReader;
 import com.minisql.engine.storage.codec.ByteUtil;
 import com.minisql.result.StatementResult;
 import com.minisql.result.ResultSet;
@@ -28,15 +29,15 @@ import com.minisql.error.Error;
 
 public class TableManagerImpl implements TableManager {
     VersionManager vm;
-    RecordManager recordManager;
+    PageRecordManager pageRecordManager;
     private final Booter booter;
     private final Map<String, Table> tableCache;
     private final Lock rLock;
     private final Lock wLock;
     
-    TableManagerImpl(VersionManager vm, RecordManager recordManager, Booter booter) {
+    TableManagerImpl(VersionManager vm, PageRecordManager pageRecordManager, Booter booter) {
         this.vm = vm;
-        this.recordManager = recordManager;
+        this.pageRecordManager = pageRecordManager;
         this.booter = booter;
         this.tableCache = new HashMap<>();
         ReadWriteLock rwLock = new ReentrantReadWriteLock();
@@ -80,8 +81,8 @@ public class TableManagerImpl implements TableManager {
     }
 
     @Override
-    public RecordManager getRecordManager() {
-        return recordManager;
+    public PageRecordManager getPageRecordManager() {
+        return pageRecordManager;
     }
 
     @Override
@@ -89,6 +90,17 @@ public class TableManagerImpl implements TableManager {
         IsolationLevel level = begin.isolationLevel == null ? IsolationLevel.READ_COMMITTED : begin.isolationLevel;
         return vm.begin(level);
     }
+
+    @Override
+    public long beginReadOnly() {
+        return vm.beginReadOnly();
+    }
+
+    @Override
+    public void endReadOnly(long xid) throws Exception {
+        vm.endReadOnly(xid);
+    }
+
     @Override
     public void commit(long xid) throws Exception {
         vm.commit(xid);
@@ -175,8 +187,10 @@ public class TableManagerImpl implements TableManager {
             } else {
                 // 就地覆盖前驱的 nextUid
                 byte[] tableBytes = vm.read(xid, pre.uid);
-                int pos = ByteUtil.decodeString(tableBytes, 0).size; // 跳过表名
-                ByteUtil.putLong(tableBytes, pos, successorUid);
+                ByteReader reader = ByteReader.wrap(tableBytes);
+                int tableNameByteLength = reader.readInt();
+                reader.skip(tableNameByteLength);
+                ByteUtil.putLong(tableBytes, reader.position(), successorUid);
                 vm.update(xid, pre.uid, tableBytes);
                 pre.nextUid = successorUid;
             }

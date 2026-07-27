@@ -9,6 +9,8 @@ import com.minisql.engine.transaction.status.TransactionManagerImpl;
 public class Transaction {
     public long xid;
     public IsolationLevel level;
+    /** 只读事务不会写入 XID 文件或 WAL，也不能进入任何修改路径。 */
+    public boolean readOnly;
     /** 事务开始时仍然活跃的其他事务 ID */
     public Map<Long, Boolean> activeSnapshot;
     public Exception error;
@@ -21,12 +23,29 @@ public class Transaction {
         Transaction tx = new Transaction();
         tx.xid = xid;
         tx.level = level;
+        tx.readOnly = false;
         if(level == IsolationLevel.REPEATABLE_READ && active != null) {
             tx.activeSnapshot = new HashMap<>();
-            for(Long x : active.keySet()) {
-                tx.activeSnapshot.put(x, true);
+            for(Transaction transaction : active.values()) {
+                // SUPER_XID 与进程内只读 XID 都不会出现在持久化记录中，无需进入快照。
+                if (transaction.xid > TransactionManagerImpl.SUPER_XID) {
+                    tx.activeSnapshot.put(transaction.xid, true);
+                }
             }
         }
+        return tx;
+    }
+
+    public static Transaction newReadOnlyTransaction(long xid) {
+        if (xid >= TransactionManagerImpl.SUPER_XID) {
+            throw new IllegalArgumentException(
+                    "read-only xid must be negative: " + xid
+            );
+        }
+        Transaction tx = new Transaction();
+        tx.xid = xid;
+        tx.level = IsolationLevel.READ_COMMITTED;
+        tx.readOnly = true;
         return tx;
     }
 

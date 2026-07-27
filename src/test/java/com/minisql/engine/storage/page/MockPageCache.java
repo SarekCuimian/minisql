@@ -10,6 +10,7 @@ import com.minisql.engine.storage.page.MockPage;
 import com.minisql.engine.storage.page.Page;
 import com.minisql.engine.storage.page.PageCache;
 import com.minisql.engine.storage.wal.LogManager;
+import com.minisql.engine.storage.wal.CheckpointManager;
 
 public class MockPageCache implements PageCache {
 
@@ -53,6 +54,14 @@ public class MockPageCache implements PageCache {
     public void markDirtyPage(int pgno, long recLsn) {}
 
     @Override
+    public Map<Integer, Long> snapshotDirtyPages() {
+        return new HashMap<>();
+    }
+
+    @Override
+    public void setCheckpointManager(CheckpointManager checkpointManager) {}
+
+    @Override
     public void trimBadTail(int maxPgno) {}
 
     @Override
@@ -61,7 +70,7 @@ public class MockPageCache implements PageCache {
     }
 
     @Override
-    public void persistPageOne(Page pg) {}
+    public void persistMetaPage(Page page) {}
 
     @Override
     public Map<Integer, Integer> getPageFreeMap() {

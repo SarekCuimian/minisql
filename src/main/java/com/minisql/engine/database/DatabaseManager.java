@@ -12,7 +12,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
-import com.minisql.engine.storage.record.RecordManager;
+import com.minisql.engine.storage.record.PageRecordManager;
 import com.minisql.engine.table.TableManager;
 import com.minisql.engine.transaction.status.TransactionManager;
 import com.minisql.error.Panic;
@@ -70,11 +70,11 @@ public class DatabaseManager {
         Files.createDirectories(dir);
         String basePath = databaseBasePath(name);
         TransactionManager txm = TransactionManager.create(basePath);
-        RecordManager recordManager = RecordManager.create(basePath, mem, txm);
-        VersionManager vm = VersionManager.create(txm, recordManager);
-        TableManager.create(basePath, vm, recordManager);
+        PageRecordManager pageRecordManager = PageRecordManager.create(basePath, mem, txm);
+        VersionManager vm = VersionManager.create(txm, pageRecordManager);
+        TableManager.create(basePath, vm, pageRecordManager);
         txm.close();
-        recordManager.close();
+        pageRecordManager.close();
     }
 
     /**
@@ -170,10 +170,10 @@ public class DatabaseManager {
         String basePath = databaseBasePath(name);
         try {
             TransactionManager txm = TransactionManager.open(basePath);
-            RecordManager recordManager = RecordManager.open(basePath, mem, txm);
-            VersionManager vm = new VersionManagerImpl(txm, recordManager);
-            TableManager tbm = TableManager.open(basePath, vm, recordManager);
-            return new DatabaseContext(name, txm, recordManager, tbm);
+            PageRecordManager pageRecordManager = PageRecordManager.open(basePath, mem, txm);
+            VersionManager vm = new VersionManagerImpl(txm, pageRecordManager);
+            TableManager tbm = TableManager.open(basePath, vm, pageRecordManager);
+            return new DatabaseContext(name, txm, pageRecordManager, tbm);
         } catch (Exception e) {
             LOGGER.error("Failed to open database '{}' at {}: {}", name, basePath, e.getMessage(), e);
             throw e;

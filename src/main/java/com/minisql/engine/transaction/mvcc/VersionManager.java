@@ -1,12 +1,14 @@
 package com.minisql.engine.transaction.mvcc;
 
-import com.minisql.engine.storage.record.RecordManager;
+import com.minisql.engine.storage.record.PageRecordManager;
 import com.minisql.engine.transaction.status.TransactionManager;
 
 public interface VersionManager {
 
     // 事务管理
     long begin(IsolationLevel level);
+    long beginReadOnly();
+    void endReadOnly(long xid) throws Exception;
     void commit(long xid) throws Exception;
     void abort(long xid);
 
@@ -30,8 +32,8 @@ public interface VersionManager {
      */
     LockManager getLockManager();
 
-    static VersionManager create(TransactionManager txm, RecordManager recordManager) {
-        return new VersionManagerImpl(txm, recordManager);
+    static VersionManager create(TransactionManager txm, PageRecordManager pageRecordManager) {
+        return new VersionManagerImpl(txm, pageRecordManager);
     }
 
 }

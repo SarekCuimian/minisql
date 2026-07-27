@@ -12,9 +12,6 @@ public class CachedPage implements Page {
     
     private boolean dirty;
 
-    /** 该页对应的最新修改的 LSN */
-    private long pageLsn;
-
     private final byte[] bytes;
 
     private final Lock rLock;
@@ -67,13 +64,13 @@ public class CachedPage implements Page {
 
     @Override
     public void setPageLsn(long pageLsn){
-        this.pageLsn = pageLsn;
-    };
+        PageHeader.setPageLsn(bytes, pageLsn);
+    }
 
     @Override
     public long getPageLsn(){
-        return pageLsn;
-    };
+        return PageHeader.getPageLsn(bytes);
+    }
 
     @Override
     public int getPageNumber() {

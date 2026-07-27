@@ -4,11 +4,13 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-import com.minisql.engine.storage.record.RecordManager;
+import com.minisql.engine.storage.record.PageRecordManager;
 import com.minisql.engine.storage.record.PageRecord;
+import com.minisql.engine.storage.wal.LogRecord;
 import com.minisql.engine.transaction.status.TransactionManager;
 import com.minisql.engine.transaction.status.TransactionManagerImpl;
 import com.minisql.error.Error;
@@ -16,14 +18,16 @@ import com.minisql.error.Error;
 public class VersionManagerImpl implements VersionManager {
 
     TransactionManager txm;
-    RecordManager recordManager;
+    PageRecordManager pageRecordManager;
     Map<Long, Transaction> activeTransactionMap;
     Lock lock;
     LockManager lockManager;
+    /** 负数 XID 只在当前进程内标识只读事务，永远不会写入记录、XID 文件或 WAL。 */
+    private final AtomicLong nextReadOnlyXid = new AtomicLong(-1);
 
-    public VersionManagerImpl(TransactionManager txm, RecordManager recordManager) {
+    public VersionManagerImpl(TransactionManager txm, PageRecordManager pageRecordManager) {
         this.txm = txm;
-        this.recordManager = recordManager;
+        this.pageRecordManager = pageRecordManager;
         this.activeTransactionMap = new HashMap<>();
         // 创建超级事务 xid = 0
         activeTransactionMap.put(
@@ -41,11 +45,7 @@ public class VersionManagerImpl implements VersionManager {
 
     @Override
     public byte[] read(long xid, long uid) throws Exception {
-        lock.lock();
-        Transaction tx = activeTransactionMap.get(xid);
-        lock.unlock();
-        if(tx == null) throw Error.NoTransactionException;
-        if(tx.error != null) throw tx.error;
+        Transaction tx = requireTransaction(xid);
 
         Entry entry = null;
         try {
@@ -70,23 +70,15 @@ public class VersionManagerImpl implements VersionManager {
 
     @Override
     public long insert(long xid, byte[] payload) throws Exception {
-        lock.lock();
-        Transaction tx = activeTransactionMap.get(xid);
-        lock.unlock();
-        if(tx == null) throw Error.NoTransactionException;
-        if(tx.error != null) throw tx.error;
+        requireWritableTransaction(xid);
 
         byte[] entryBytes = Entry.newEntryBytes(xid, payload);
-        return recordManager.insert(xid, entryBytes);
+        return pageRecordManager.insert(xid, entryBytes);
     }
 
     @Override
     public boolean delete(long xid, long uid) throws Exception {
-        lock.lock();
-        Transaction tx = activeTransactionMap.get(xid);
-        lock.unlock();
-        if(tx == null) throw Error.NoTransactionException;
-        if(tx.error != null) throw tx.error;
+        Transaction tx = requireWritableTransaction(xid);
 
         Entry entry = null;
         try {
@@ -133,11 +125,7 @@ public class VersionManagerImpl implements VersionManager {
      */
     @Override
     public void update(long xid, long uid, byte[] payload) throws Exception {
-        lock.lock();
-        Transaction tx = activeTransactionMap.get(xid);
-        lock.unlock();
-        if(tx == null) throw Error.NoTransactionException;
-        if(tx.error != null) throw tx.error;
+        requireWritableTransaction(xid);
 
         Entry entry = null;
         entry = loadEntry(uid);
@@ -150,11 +138,7 @@ public class VersionManagerImpl implements VersionManager {
 
     @Override
     public byte[] readForUpdate(long xid, long uid) throws Exception {
-        lock.lock();
-        Transaction tx = activeTransactionMap.get(xid);
-        lock.unlock();
-        if(tx == null) throw Error.NoTransactionException;
-        if(tx.error != null) throw tx.error;
+        Transaction tx = requireWritableTransaction(xid);
 
         Entry entry = null;
         try {
@@ -193,10 +177,47 @@ public class VersionManagerImpl implements VersionManager {
         lock.lock();
         try {
             // 开启事务，获取xid
-            long xid = txm.begin();
+            long xid = pageRecordManager.beginTransaction();
             Transaction tx = Transaction.newTransaction(xid, level, activeTransactionMap);
             activeTransactionMap.put(xid, tx);
             return xid;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public long beginReadOnly() {
+        long xid = nextReadOnlyXid.getAndUpdate(
+                current -> current == Long.MIN_VALUE
+                        ? Long.MIN_VALUE
+                        : current - 1
+        );
+        if (xid == Long.MIN_VALUE) {
+            throw new IllegalStateException("read-only xid space exhausted");
+        }
+        lock.lock();
+        try {
+            activeTransactionMap.put(
+                    xid,
+                    Transaction.newReadOnlyTransaction(xid)
+            );
+            return xid;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public void endReadOnly(long xid) throws Exception {
+        lock.lock();
+        try {
+            Transaction transaction = activeTransactionMap.get(xid);
+            if (transaction == null || !transaction.readOnly) {
+                throw Error.NoTransactionException;
+            }
+            transaction.terminated = true;
+            activeTransactionMap.remove(xid);
         } finally {
             lock.unlock();
         }
@@ -216,9 +237,11 @@ public class VersionManagerImpl implements VersionManager {
             lock.unlock();
         }
         lockManager.clear(xid);
-        long lsn = txm.getLastLsn(xid);
-        recordManager.flushLog(lsn);
+        LogRecord commitRecord = pageRecordManager.appendCommitLog(xid);
+        pageRecordManager.flushLog(commitRecord.getEndLsn());
         txm.commit(xid);
+        pageRecordManager.appendEndLog(xid, commitRecord.getStartLsn());
+        txm.complete(xid);
     }
 
     @Override
@@ -240,16 +263,42 @@ public class VersionManagerImpl implements VersionManager {
             lock.unlock();
         }
         lockManager.clear(xid);
-        txm.abort(xid);
+        LogRecord abortRecord = pageRecordManager.appendAbortLog(xid);
+        pageRecordManager.undoTransaction(xid, abortRecord);
     }
 
 
     private Entry loadEntry(long uid) throws Exception {
-        PageRecord record = recordManager.acquire(uid);
+        PageRecord record = pageRecordManager.acquire(uid);
         if(record == null) {
             throw Error.NullEntryException;
         }
         return new Entry(record, uid);
+    }
+
+    private Transaction requireTransaction(long xid) throws Exception {
+        Transaction transaction;
+        lock.lock();
+        try {
+            transaction = activeTransactionMap.get(xid);
+        } finally {
+            lock.unlock();
+        }
+        if (transaction == null) {
+            throw Error.NoTransactionException;
+        }
+        if (transaction.error != null) {
+            throw transaction.error;
+        }
+        return transaction;
+    }
+
+    private Transaction requireWritableTransaction(long xid) throws Exception {
+        Transaction transaction = requireTransaction(xid);
+        if (transaction.readOnly) {
+            throw Error.ReadOnlyTransactionException;
+        }
+        return transaction;
     }
     
     /**

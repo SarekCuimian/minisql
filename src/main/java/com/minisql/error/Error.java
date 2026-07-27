@@ -22,6 +22,7 @@ public class Error {
     public static final Exception NullEntryException = new RuntimeException("Null entry!");
     public static final Exception LockWaitTimeoutException = new RuntimeException("Lock wait timeout exceeded!");
     public static final Exception TransactionTerminatedException = new RuntimeException("Transaction has been terminated!");
+    public static final Exception ReadOnlyTransactionException = new RuntimeException("Read-only transaction cannot modify data!");
     public static final Exception MultipleVisibleVersionsException = new RuntimeException("Primary key corruption: multiple visible versions detected!");
 
     // tbm
