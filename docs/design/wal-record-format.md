@@ -7,7 +7,7 @@
 
 ## 1. 设计原则
 
-1. `LogManager` 只识别 WAL file header、physical record header 和 `byte[] payload`。
+1. `WriteAheadLogger` 只识别 WAL file header、physical record header 和 `byte[] payload`。
 2. `LogRecordCodec` 负责在结构化 payload 与 `byte[]` 之间 encode/decode。
 3. 所有整数使用固定字节宽度；持久化的 type 使用显式 byte code，不使用
    `enum.ordinal()`。
@@ -584,7 +584,7 @@ read ATT.lastLsn
 encode payload.prevLsn
         │
         ▼
-LogManager.append(payload)
+WriteAheadLogger.append(payload)
         │
         ├── LogRecord.startLsn
         └── LogRecord.endLsn

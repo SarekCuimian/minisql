@@ -10,74 +10,104 @@ import com.minisql.engine.storage.codec.UidUtil;
 import com.minisql.engine.storage.page.DataPage;
 import com.minisql.engine.storage.page.MetaPage;
 import com.minisql.engine.storage.page.Page;
-import com.minisql.engine.storage.page.PageCache;
+import com.minisql.engine.storage.page.PageBufferPool;
 import com.minisql.engine.storage.page.fsm.FreeSpace;
 import com.minisql.engine.storage.page.fsm.FreeSpaceMap;
-import com.minisql.engine.storage.wal.LogManager;
+import com.minisql.engine.storage.wal.WriteAheadLogger;
 import com.minisql.engine.storage.wal.CheckpointManager;
 import com.minisql.engine.storage.wal.LogRecord;
 import com.minisql.engine.storage.wal.LogRecordCodec;
 import com.minisql.engine.storage.wal.LogRecordType;
 import com.minisql.engine.storage.wal.Recovery;
-import com.minisql.engine.transaction.status.TransactionManager;
+import com.minisql.engine.storage.wal.ActiveTransaction;
+import com.minisql.engine.storage.wal.ActiveTransactionTable;
+import com.minisql.engine.transaction.xid.XidAllocator;
+import com.minisql.engine.transaction.xid.XidStatusTable;
 import com.minisql.error.Error;
 import com.minisql.error.Panic;
 
 /** 协调页内 record 的存取、WAL 与空闲空间管理。 */
 public final class PageRecordManager implements AutoCloseable {
 
-    private final TransactionManager transactionManager;
-    private final PageCache pageCache;
-    private final LogManager logManager;
+    private final XidStatusTable xidStatusTable;
+    private final ActiveTransactionTable activeTransactionTable;
+    private final PageBufferPool bufferPool;
+    private final WriteAheadLogger walLogger;
     private final FreeSpaceMap freeSpaceMap;
     private final Lock logChainLock;
     private Page metaPage;
 
-    private PageRecordManager(PageCache pageCache, LogManager logManager, TransactionManager transactionManager) {
-        this.pageCache = pageCache;
-        this.logManager = logManager;
-        this.transactionManager = transactionManager;
+    private PageRecordManager(
+            PageBufferPool bufferPool,
+            WriteAheadLogger walLogger,
+            XidStatusTable xidStatusTable,
+            ActiveTransactionTable activeTransactionTable
+    ) {
+        this.bufferPool = bufferPool;
+        this.walLogger = walLogger;
+        this.xidStatusTable = xidStatusTable;
+        this.activeTransactionTable = activeTransactionTable;
         this.freeSpaceMap = new FreeSpaceMap();
         this.logChainLock = new ReentrantLock();
-        this.pageCache.setCheckpointManager(
+        this.bufferPool.setCheckpointManager(
                 new CheckpointManager(
-                        logManager,
-                        pageCache,
-                        transactionManager,
+                        walLogger,
+                        bufferPool,
+                        activeTransactionTable,
                         logChainLock
                 )
         );
     }
 
-    public static PageRecordManager create(String path, long memory, TransactionManager transactionManager) {
-        LogManager logManager = LogManager.create(path);
-        PageCache pageCache = PageCache.create(path, memory);
+    public static PageRecordManager create(
+            String path,
+            long memory,
+            XidStatusTable xidStatusTable,
+            ActiveTransactionTable activeTransactionTable
+    ) {
+        WriteAheadLogger walLogger = WriteAheadLogger.create(path);
+        PageBufferPool bufferPool = PageBufferPool.create(path, memory);
 
-        PageRecordManager pageRecordManager = new PageRecordManager(pageCache, logManager, transactionManager);
-        pageCache.setLogManager(logManager);
+        PageRecordManager pageRecordManager = new PageRecordManager(
+                bufferPool,
+                walLogger,
+                xidStatusTable,
+                activeTransactionTable
+        );
+        bufferPool.setWalLogger(walLogger);
         pageRecordManager.initializeMetaPage();
         return pageRecordManager;
     }
 
-    public static PageRecordManager open(String path, long memory, TransactionManager transactionManager) {
-        LogManager logManager = LogManager.open(path);
-        PageCache pageCache = PageCache.open(path, memory);
+    public static PageRecordManager open(
+            String path,
+            long memory,
+            XidStatusTable xidStatusTable,
+            ActiveTransactionTable activeTransactionTable
+    ) {
+        WriteAheadLogger walLogger = WriteAheadLogger.open(path);
+        PageBufferPool bufferPool = PageBufferPool.open(path, memory);
 
-        PageRecordManager pageRecordManager = new PageRecordManager(pageCache, logManager, transactionManager);
+        PageRecordManager pageRecordManager = new PageRecordManager(
+                bufferPool,
+                walLogger,
+                xidStatusTable,
+                activeTransactionTable
+        );
         if (!pageRecordManager.loadAndCheckMetaPage()) {
-            Recovery.recover(transactionManager, logManager, pageCache);
+            Recovery.recover(xidStatusTable, walLogger, bufferPool);
         }
-        pageCache.setLogManager(logManager);
+        bufferPool.setWalLogger(walLogger);
         pageRecordManager.initializeFreeSpaceMap();
         MetaPage.setVcOpen(pageRecordManager.metaPage);
-        pageCache.persistMetaPage(pageRecordManager.metaPage);
+        bufferPool.persistMetaPage(pageRecordManager.metaPage);
         return pageRecordManager;
     }
 
     public PageRecord acquire(long uid) throws Exception {
         short offset = UidUtil.getOffset(uid);
         int pageNumber = UidUtil.getPgno(uid);
-        Page page = pageCache.getPage(pageNumber);
+        Page page = bufferPool.getPage(pageNumber);
         try {
             page.rLock();
             try {
@@ -109,7 +139,7 @@ public final class PageRecordManager implements AutoCloseable {
             if (freeSpace != null) {
                 break;
             }
-            int pageNumber = pageCache.newPage(DataPage.newPageBytes());
+            int pageNumber = bufferPool.newPage(DataPage.newPageBytes());
             freeSpaceMap.add(pageNumber, DataPage.MAX_FREE_SPACE_SIZE);
         }
         if (freeSpace == null) {
@@ -119,13 +149,13 @@ public final class PageRecordManager implements AutoCloseable {
         Page page = null;
         int freeSpaceSize = freeSpace.size;
         try {
-            page = pageCache.getPage(freeSpace.pgno);
+            page = bufferPool.getPage(freeSpace.pgno);
             page.wLock();
             try {
                 LogRecord logRecord;
                 logChainLock.lock();
                 try {
-                    long prevLsn = transactionManager.getLastLsn(xid);
+                    long prevLsn = getLastLsn(xid);
                     byte[] logPayload = LogRecordCodec.encodeInsert(
                             xid,
                             prevLsn,
@@ -133,9 +163,9 @@ public final class PageRecordManager implements AutoCloseable {
                             DataPage.getFso(page),
                             recordBytes
                     );
-                    logRecord = logManager.append(logPayload);
-                    transactionManager.updateLastLsn(xid, logRecord.getStartLsn());
-                    pageCache.markDirtyPage(
+                    logRecord = walLogger.append(logPayload);
+                    updateLastLsn(xid, logRecord.getStartLsn());
+                    bufferPool.markDirtyPage(
                             page.getPageNumber(),
                             logRecord.getStartLsn()
                     );
@@ -172,7 +202,7 @@ public final class PageRecordManager implements AutoCloseable {
         LogRecord logRecord;
         logChainLock.lock();
         try {
-            long prevLsn = transactionManager.getLastLsn(xid);
+            long prevLsn = getLastLsn(xid);
             byte[] logPayload = LogRecordCodec.encodeUpdate(
                     xid,
                     prevLsn,
@@ -181,9 +211,9 @@ public final class PageRecordManager implements AutoCloseable {
                     beforeImage,
                     afterImage
             );
-            logRecord = logManager.append(logPayload);
-            transactionManager.updateLastLsn(xid, logRecord.getStartLsn());
-            pageCache.markDirtyPage(
+            logRecord = walLogger.append(logPayload);
+            updateLastLsn(xid, logRecord.getStartLsn());
+            bufferPool.markDirtyPage(
                     record.getPage().getPageNumber(),
                     logRecord.getStartLsn()
             );
@@ -201,22 +231,28 @@ public final class PageRecordManager implements AutoCloseable {
         }
     }
 
-    public long beginTransaction() {
+    public void beginTransaction(long xid) {
+        if (xid <= XidAllocator.SYSTEM_XID) {
+            throw new IllegalArgumentException("XID must be positive: " + xid);
+        }
         logChainLock.lock();
-        long xid = transactionManager.begin();
+        activeTransactionTable.add(
+                xid,
+                ActiveTransaction.Status.ACTIVE,
+                LogRecord.NO_LSN
+        );
         try {
             byte[] payload = LogRecordCodec.encodeTransactionState(
                     LogRecordType.BEGIN,
                     xid,
                     LogRecord.NO_LSN
             );
-            LogRecord beginRecord = logManager.append(payload);
-            transactionManager.updateLastLsn(xid, beginRecord.getStartLsn());
-            logManager.flush(beginRecord.getEndLsn());
-            return xid;
+            LogRecord beginRecord = walLogger.append(payload);
+            updateLastLsn(xid, beginRecord.getStartLsn());
+            walLogger.flush(beginRecord.getEndLsn());
         } catch (RuntimeException exception) {
-            transactionManager.abort(xid);
-            transactionManager.complete(xid);
+            xidStatusTable.recordAborted(xid);
+            activeTransactionTable.remove(xid);
             throw exception;
         } finally {
             logChainLock.unlock();
@@ -239,26 +275,27 @@ public final class PageRecordManager implements AutoCloseable {
                     xid,
                     prevLsn
             );
-            return logManager.append(payload);
+            return walLogger.append(payload);
         } finally {
             logChainLock.unlock();
         }
     }
 
     public void undoTransaction(long xid, LogRecord abortRecord) {
-        logManager.flush(abortRecord.getEndLsn());
+        walLogger.flush(abortRecord.getEndLsn());
         Recovery.undoTransaction(
-                transactionManager,
-                logManager,
-                pageCache,
+                xidStatusTable,
+                walLogger,
+                bufferPool,
                 xid,
                 abortRecord.getStartLsn()
         );
+        activeTransactionTable.remove(xid);
     }
 
     public void flushLog(long lsn) {
         if (lsn > 0) {
-            logManager.flush(lsn);
+            walLogger.flush(lsn);
         }
     }
 
@@ -267,14 +304,22 @@ public final class PageRecordManager implements AutoCloseable {
         try {
             long prevLsn = type == LogRecordType.BEGIN
                     ? LogRecord.NO_LSN
-                    : transactionManager.getLastLsn(xid);
+                    : getLastLsn(xid);
             byte[] payload = LogRecordCodec.encodeTransactionState(type, xid, prevLsn);
-            LogRecord record = logManager.append(payload);
-            transactionManager.updateLastLsn(xid, record.getStartLsn());
+            LogRecord record = walLogger.append(payload);
+            updateLastLsn(xid, record.getStartLsn());
             if (type == LogRecordType.COMMIT) {
-                transactionManager.markCommitting(xid);
+                activeTransactionTable.update(
+                        xid,
+                        ActiveTransaction.Status.COMMITTING,
+                        record.getStartLsn()
+                );
             } else if (type == LogRecordType.ABORT) {
-                transactionManager.markAborting(xid);
+                activeTransactionTable.update(
+                        xid,
+                        ActiveTransaction.Status.ABORTING,
+                        record.getStartLsn()
+                );
             }
             return record;
         } finally {
@@ -282,29 +327,55 @@ public final class PageRecordManager implements AutoCloseable {
         }
     }
 
-    @Override
+    public void completeTransaction(long xid) {
+        activeTransactionTable.remove(xid);
+    }
+
+    private long getLastLsn(long xid) {
+        if (xid <= XidAllocator.SYSTEM_XID) {
+            return LogRecord.NO_LSN;
+        }
+        ActiveTransaction transaction = activeTransactionTable.get(xid);
+        if (transaction == null) {
+            throw new IllegalStateException(
+                    "Missing active WAL transaction: " + xid
+            );
+        }
+        return transaction.getLastLsn();
+    }
+
+    private void updateLastLsn(long xid, long lastLsn) {
+        if (xid <= XidAllocator.SYSTEM_XID) {
+            return;
+        }
+        ActiveTransaction transaction = activeTransactionTable.get(xid);
+        ActiveTransaction.Status status = transaction == null
+                ? ActiveTransaction.Status.ACTIVE
+                : transaction.getStatus();
+        activeTransactionTable.update(xid, status, lastLsn);
+    }
     public void close() {
         MetaPage.setVcClose(metaPage);
-        pageCache.persistMetaPage(metaPage);
+        bufferPool.persistMetaPage(metaPage);
         metaPage.release();
-        pageCache.close();
-        logManager.close();
+        bufferPool.close();
+        walLogger.close();
     }
 
     private void initializeMetaPage() {
-        int pageNumber = pageCache.newPage(MetaPage.newPageBytes());
+        int pageNumber = bufferPool.newPage(MetaPage.newPageBytes());
         assert pageNumber == 1;
         try {
-            metaPage = pageCache.getPage(pageNumber);
+            metaPage = bufferPool.getPage(pageNumber);
         } catch (Exception e) {
             Panic.of(e);
         }
-        pageCache.persistMetaPage(metaPage);
+        bufferPool.persistMetaPage(metaPage);
     }
 
     private boolean loadAndCheckMetaPage() {
         try {
-            metaPage = pageCache.getPage(1);
+            metaPage = bufferPool.getPage(1);
         } catch (Exception e) {
             Panic.of(e);
         }
@@ -313,7 +384,7 @@ public final class PageRecordManager implements AutoCloseable {
     }
 
     private void initializeFreeSpaceMap() {
-        Map<Integer, Integer> freeSpaceByPage = pageCache.getPageFreeMap();
+        Map<Integer, Integer> freeSpaceByPage = bufferPool.getPageFreeMap();
         for (Map.Entry<Integer, Integer> entry : freeSpaceByPage.entrySet()) {
             freeSpaceMap.add(entry.getKey(), entry.getValue());
         }

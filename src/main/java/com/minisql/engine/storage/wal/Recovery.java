@@ -8,9 +8,9 @@ import java.util.PriorityQueue;
 import com.minisql.engine.storage.page.DataPage;
 import com.minisql.engine.storage.page.DirtyPageTable;
 import com.minisql.engine.storage.page.Page;
-import com.minisql.engine.storage.page.PageCache;
+import com.minisql.engine.storage.page.PageBufferPool;
 import com.minisql.engine.storage.record.PageRecord;
-import com.minisql.engine.transaction.status.TransactionManager;
+import com.minisql.engine.transaction.xid.XidStatusTable;
 import com.minisql.error.Panic;
 
 /**
@@ -22,21 +22,21 @@ public final class Recovery {
     }
 
     public static void recover(
-            TransactionManager transactionManager,
-            LogManager logManager,
-            PageCache pageCache
+            XidStatusTable xidStatusTable,
+            WriteAheadLogger walLogger,
+            PageBufferPool bufferPool
     ) {
         System.out.println("Recovering...");
 
-        AnalysisResult analysis = analyze(transactionManager, logManager);
+        AnalysisResult analysis = analyze(xidStatusTable, walLogger);
 
-        redo(logManager, pageCache, analysis.dirtyPageTable);
+        redo(walLogger, bufferPool, analysis.dirtyPageTable);
         System.out.println("Redo Transactions Over.");
 
         undo(
-                transactionManager,
-                logManager,
-                pageCache,
+                xidStatusTable,
+                walLogger,
+                bufferPool,
                 analysis.activeTransactionTable
         );
         System.out.println("Undo Transactions Over.");
@@ -44,37 +44,36 @@ public final class Recovery {
     }
 
     public static void undoTransaction(
-            TransactionManager transactionManager,
-            LogManager logManager,
-            PageCache pageCache,
+            XidStatusTable xidStatusTable,
+            WriteAheadLogger walLogger,
+            PageBufferPool bufferPool,
             long xid,
             long lastLsn
     ) {
-        ActiveTransactionTable activeTransactionTable =
-                new ActiveTransactionTable();
+        ActiveTransactionTable activeTransactionTable = new ActiveTransactionTable();
         activeTransactionTable.add(
                 xid,
                 ActiveTransaction.Status.ABORTING,
                 lastLsn
         );
         undo(
-                transactionManager,
-                logManager,
-                pageCache,
+                xidStatusTable,
+                walLogger,
+                bufferPool,
                 activeTransactionTable
         );
     }
 
     private static AnalysisResult analyze(
-            TransactionManager transactionManager,
-            LogManager logManager
+            XidStatusTable xidStatusTable,
+            WriteAheadLogger walLogger
     ) {
         DirtyPageTable dirtyPageTable = new DirtyPageTable();
         ActiveTransactionTable activeTransactionTable =
                 new ActiveTransactionTable();
 
-        try (LogManager.LogReader reader = logManager.getReader()) {
-            reader.seek(logManager.getCheckpointLsn());
+        try (WriteAheadLogger.Reader reader = walLogger.getReader()) {
+            reader.seek(walLogger.getCheckpointLsn());
             CheckpointAccumulator checkpoint = null;
             while (true) {
                 LogRecord record = reader.next();
@@ -108,7 +107,7 @@ public final class Recovery {
                         break;
                 }
                 analyzeRecord(
-                        transactionManager,
+                        xidStatusTable,
                         dirtyPageTable,
                         activeTransactionTable,
                         record
@@ -122,16 +121,15 @@ public final class Recovery {
                     != ActiveTransaction.Status.COMMITTING) {
                 continue;
             }
-            transactionManager.commit(transaction.getXid());
-            LogRecord endRecord = logManager.append(
+            xidStatusTable.recordCommitted(transaction.getXid());
+            LogRecord endRecord = walLogger.append(
                     LogRecordCodec.encodeTransactionState(
                             LogRecordType.END,
                             transaction.getXid(),
                             transaction.getLastLsn()
                     )
             );
-            logManager.flush(endRecord.getEndLsn());
-            transactionManager.complete(transaction.getXid());
+            walLogger.flush(endRecord.getEndLsn());
             activeTransactionTable.remove(transaction.getXid());
         }
 
@@ -153,7 +151,7 @@ public final class Recovery {
     }
 
     private static void analyzeRecord(
-            TransactionManager transactionManager,
+            XidStatusTable xidStatusTable,
             DirtyPageTable dirtyPageTable,
             ActiveTransactionTable activeTransactionTable,
             LogRecord record
@@ -214,8 +212,8 @@ public final class Recovery {
                         ActiveTransaction.Status.COMMITTING,
                         record.getStartLsn()
                 );
-                if (!transactionManager.isCommitted(payload.getXid())) {
-                    transactionManager.commit(payload.getXid());
+                if (!xidStatusTable.isCommitted(payload.getXid())) {
+                    xidStatusTable.recordCommitted(payload.getXid());
                 }
                 break;
             }
@@ -233,7 +231,6 @@ public final class Recovery {
                 LogRecordCodec.TransactionStatePayload payload =
                         LogRecordCodec.decodeTransactionState(record.getPayload());
                 activeTransactionTable.remove(payload.getXid());
-                transactionManager.complete(payload.getXid());
                 break;
             }
             case BEGIN_CHECKPOINT:
@@ -266,8 +263,8 @@ public final class Recovery {
     }
 
     private static void redo(
-            LogManager logManager,
-            PageCache pageCache,
+            WriteAheadLogger walLogger,
+            PageBufferPool bufferPool,
             DirtyPageTable dirtyPageTable
     ) {
         long redoLsn = dirtyPageTable.getMinRecoveryLsn();
@@ -275,7 +272,7 @@ public final class Recovery {
             return;
         }
 
-        try (LogManager.LogReader reader = logManager.getReader()) {
+        try (WriteAheadLogger.Reader reader = walLogger.getReader()) {
             reader.seek(redoLsn);
             while (true) {
                 LogRecord record = reader.next();
@@ -294,13 +291,13 @@ public final class Recovery {
 
                 switch (record.getType()) {
                     case INSERT:
-                        replayInsert(pageCache, record);
+                        replayInsert(bufferPool, record);
                         break;
                     case UPDATE:
-                        replayUpdate(pageCache, record);
+                        replayUpdate(bufferPool, record);
                         break;
                     case CLR:
-                        replayClr(pageCache, record);
+                        replayClr(bufferPool, record);
                         break;
                     default:
                         throw new IllegalStateException(
@@ -312,9 +309,9 @@ public final class Recovery {
     }
 
     private static void undo(
-            TransactionManager transactionManager,
-            LogManager logManager,
-            PageCache pageCache,
+            XidStatusTable xidStatusTable,
+            WriteAheadLogger walLogger,
+            PageBufferPool bufferPool,
             ActiveTransactionTable activeTransactionTable
     ) {
         PriorityQueue<UndoTask> tasks = new PriorityQueue<>(
@@ -327,7 +324,7 @@ public final class Recovery {
                 continue;
             }
             if (transaction.getStatus() == ActiveTransaction.Status.ACTIVE) {
-                LogRecord abortRecord = logManager.append(
+                LogRecord abortRecord = walLogger.append(
                         LogRecordCodec.encodeTransactionState(
                                 LogRecordType.ABORT,
                                 transaction.getXid(),
@@ -351,21 +348,21 @@ public final class Recovery {
             }
         }
 
-        try (LogManager.LogReader reader = logManager.getReader()) {
+        try (WriteAheadLogger.Reader reader = walLogger.getReader()) {
             while (!tasks.isEmpty()) {
                 UndoTask task = tasks.remove();
                 LogRecord record = readRecord(reader, task.nextLsn);
                 long nextLsn = undoRecord(
-                        logManager,
-                        pageCache,
+                        walLogger,
+                        bufferPool,
                         activeTransactionTable,
                         task.xid,
                         record
                 );
                 if (nextLsn == LogRecord.NO_LSN) {
                     finishUndo(
-                            transactionManager,
-                            logManager,
+                            xidStatusTable,
+                            walLogger,
                             activeTransactionTable,
                             task.xid
                     );
@@ -377,8 +374,8 @@ public final class Recovery {
     }
 
     private static long undoRecord(
-            LogManager logManager,
-            PageCache pageCache,
+            WriteAheadLogger walLogger,
+            PageBufferPool bufferPool,
             ActiveTransactionTable activeTransactionTable,
             long xid,
             LogRecord record
@@ -397,8 +394,8 @@ public final class Recovery {
                 byte[] compensationImage = payload.getRecordBytes();
                 PageRecord.markInvalid(compensationImage);
                 return appendClrAndApply(
-                        logManager,
-                        pageCache,
+                        walLogger,
+                        bufferPool,
                         activeTransactionTable,
                         xid,
                         payload.getPrevLsn(),
@@ -412,8 +409,8 @@ public final class Recovery {
                         LogRecordCodec.decodeUpdate(record.getPayload());
                 requireXid(xid, payload.getXid(), record);
                 return appendClrAndApply(
-                        logManager,
-                        pageCache,
+                        walLogger,
+                        bufferPool,
                         activeTransactionTable,
                         xid,
                         payload.getPrevLsn(),
@@ -430,8 +427,8 @@ public final class Recovery {
     }
 
     private static long appendClrAndApply(
-            LogManager logManager,
-            PageCache pageCache,
+            WriteAheadLogger walLogger,
+            PageBufferPool bufferPool,
             ActiveTransactionTable activeTransactionTable,
             long xid,
             long undoNextLsn,
@@ -452,14 +449,14 @@ public final class Recovery {
                 recordOffsetInPage,
                 compensationImage
         );
-        LogRecord clrRecord = logManager.append(clrPayload);
+        LogRecord clrRecord = walLogger.append(clrPayload);
         activeTransactionTable.update(
                 xid,
                 ActiveTransaction.Status.ABORTING,
                 clrRecord.getStartLsn()
         );
         applyPageImage(
-                pageCache,
+                bufferPool,
                 clrRecord,
                 pageNumber,
                 recordOffsetInPage,
@@ -469,8 +466,8 @@ public final class Recovery {
     }
 
     private static void finishUndo(
-            TransactionManager transactionManager,
-            LogManager logManager,
+            XidStatusTable xidStatusTable,
+            WriteAheadLogger walLogger,
             ActiveTransactionTable activeTransactionTable,
             long xid
     ) {
@@ -479,20 +476,19 @@ public final class Recovery {
         if (transaction == null) {
             return;
         }
-        LogRecord endRecord = logManager.append(
+        LogRecord endRecord = walLogger.append(
                 LogRecordCodec.encodeTransactionState(
                         LogRecordType.END,
                         xid,
                         transaction.getLastLsn()
                 )
         );
-        logManager.flush(endRecord.getEndLsn());
-        transactionManager.abort(xid);
-        transactionManager.complete(xid);
+        walLogger.flush(endRecord.getEndLsn());
+        xidStatusTable.recordAborted(xid);
         activeTransactionTable.remove(xid);
     }
 
-    private static LogRecord readRecord(LogManager.LogReader reader, long startLsn) {
+    private static LogRecord readRecord(WriteAheadLogger.Reader reader, long startLsn) {
         reader.seek(startLsn);
         LogRecord record = reader.next();
         if (record == null || record.getStartLsn() != startLsn) {
@@ -550,11 +546,11 @@ public final class Recovery {
         }
     }
 
-    private static void replayInsert(PageCache pageCache, LogRecord record) {
+    private static void replayInsert(PageBufferPool bufferPool, LogRecord record) {
         LogRecordCodec.InsertPayload payload =
                 LogRecordCodec.decodeInsert(record.getPayload());
         applyPageImage(
-                pageCache,
+                bufferPool,
                 record,
                 payload.getPageNumber(),
                 payload.getRecordOffsetInPage(),
@@ -562,11 +558,11 @@ public final class Recovery {
         );
     }
 
-    private static void replayUpdate(PageCache pageCache, LogRecord record) {
+    private static void replayUpdate(PageBufferPool bufferPool, LogRecord record) {
         LogRecordCodec.UpdatePayload payload =
                 LogRecordCodec.decodeUpdate(record.getPayload());
         applyPageImage(
-                pageCache,
+                bufferPool,
                 record,
                 payload.getPageNumber(),
                 payload.getRecordOffsetInPage(),
@@ -574,11 +570,11 @@ public final class Recovery {
         );
     }
 
-    private static void replayClr(PageCache pageCache, LogRecord record) {
+    private static void replayClr(PageBufferPool bufferPool, LogRecord record) {
         LogRecordCodec.ClrPayload payload =
                 LogRecordCodec.decodeClr(record.getPayload());
         applyPageImage(
-                pageCache,
+                bufferPool,
                 record,
                 payload.getPageNumber(),
                 payload.getRecordOffsetInPage(),
@@ -587,7 +583,7 @@ public final class Recovery {
     }
 
     private static void applyPageImage(
-            PageCache pageCache,
+            PageBufferPool bufferPool,
             LogRecord record,
             int pageNumber,
             short recordOffsetInPage,
@@ -595,7 +591,7 @@ public final class Recovery {
     ) {
         Page page;
         try {
-            page = pageCache.getPage(pageNumber);
+            page = bufferPool.getPage(pageNumber);
         } catch (Exception exception) {
             Panic.of(exception);
             return;
@@ -608,7 +604,7 @@ public final class Recovery {
                 }
                 DataPage.recoverInsert(page, recordBytes, recordOffsetInPage);
                 page.setPageLsn(record.getEndLsn());
-                pageCache.markDirtyPage(pageNumber, record.getStartLsn());
+                bufferPool.markDirtyPage(pageNumber, record.getStartLsn());
             } finally {
                 page.wUnlock();
             }

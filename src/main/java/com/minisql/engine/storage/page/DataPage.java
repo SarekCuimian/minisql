@@ -1,6 +1,6 @@
 package com.minisql.engine.storage.page;
 
-import com.minisql.engine.storage.page.PageCache;
+import com.minisql.engine.storage.page.PageBufferPool;
 import com.minisql.engine.storage.codec.ByteUtil;
 
 /**
@@ -24,15 +24,15 @@ public final class DataPage {
      * 单页可用最大空闲空间（字节）。
      * <p>等于页大小减去 FSO 占用的 2 字节。</p>
      */
-    public static final int MAX_FREE_SPACE_SIZE = PageCache.PAGE_SIZE - RECORD_AREA_OFFSET;
+    public static final int MAX_FREE_SPACE_SIZE = PageBufferPool.PAGE_SIZE - RECORD_AREA_OFFSET;
 
     /**
      * 创建普通页，并设置 FSO 指向公共页头和 DataPage header 之后。
      *
-     * @return 已初始化的 page bytes（长度为 {@link PageCache#PAGE_SIZE}）
+     * @return 已初始化的 page bytes（长度为 {@link PageBufferPool#PAGE_SIZE}）
      */
     public static byte[] newPageBytes() {
-        byte[] pageBytes = new byte[PageCache.PAGE_SIZE];
+        byte[] pageBytes = new byte[PageBufferPool.PAGE_SIZE];
         setFso(pageBytes, RECORD_AREA_OFFSET);
         return pageBytes;
     }
@@ -104,7 +104,7 @@ public final class DataPage {
 
     /**
      * 计算页面当前空闲空间大小（字节）。
-     * <p>等于 {@code PageCache.PAGE_SIZE - FSO}。</p>
+     * <p>等于 {@code PageBufferPool.PAGE_SIZE - FSO}。</p>
      *
      * @param pg 目标页
      * @return 空闲空间字节数
@@ -112,7 +112,7 @@ public final class DataPage {
     public static int getFreeSpaceSize(Page pg) {
         pg.rLock();
         try {
-            return PageCache.PAGE_SIZE - (int) getFso(pg.getBytes());
+            return PageBufferPool.PAGE_SIZE - (int) getFso(pg.getBytes());
         } finally {
             pg.rUnlock();
         }
@@ -120,7 +120,7 @@ public final class DataPage {
 
     /** 从持久化 Page bytes 计算剩余空间。 */
     static int getFreeSpaceSize(byte[] pageBytes) {
-        return PageCache.PAGE_SIZE - (int) getFso(pageBytes);
+        return PageBufferPool.PAGE_SIZE - (int) getFso(pageBytes);
     }
 
     /**

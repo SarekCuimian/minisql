@@ -6,7 +6,7 @@ import java.util.List;
 import com.minisql.engine.storage.codec.ByteSlice;
 import com.minisql.engine.storage.codec.ByteUtil;
 import com.minisql.engine.storage.record.PageRecord;
-import com.minisql.engine.transaction.status.TransactionManagerImpl;
+import com.minisql.engine.transaction.xid.XidAllocator;
 
 /**
  * B+Tree Node 的二进制布局：
@@ -162,7 +162,7 @@ public class Node implements AutoCloseable {
             }
         } finally {
             if (error == null && inserted) {
-                record.finishUpdate(TransactionManagerImpl.SUPER_XID);
+                record.finishUpdate(XidAllocator.SYSTEM_XID);
             } else {
                 record.abortUpdate();
             }
@@ -212,7 +212,7 @@ public class Node implements AutoCloseable {
         copyEntriesFrom(nodeBytes, BALANCE_NUMBER, newNodeBytes, BALANCE_NUMBER);
 
         long rightNodeUid = tree.pageRecordManager.insert(
-                TransactionManagerImpl.SUPER_XID,
+                XidAllocator.SYSTEM_XID,
                 newNodeBytes.bytes()
         );
         setKeyCount(nodeBytes, BALANCE_NUMBER);

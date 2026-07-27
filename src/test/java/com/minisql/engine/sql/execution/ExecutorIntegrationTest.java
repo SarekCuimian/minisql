@@ -2,7 +2,7 @@ package com.minisql.engine.sql.execution;
 
 import com.minisql.engine.database.DatabaseManager;
 import com.minisql.engine.database.DatabaseContext;
-import com.minisql.engine.storage.wal.LogManager;
+import com.minisql.engine.storage.wal.WriteAheadLogger;
 import com.minisql.engine.storage.wal.LogRecord;
 import com.minisql.engine.storage.wal.LogRecordType;
 import com.minisql.engine.transaction.mvcc.VersionManager;
@@ -213,8 +213,8 @@ public class ExecutorIntegrationTest {
 
     private long countTransactionWalRecords(Path databaseBase) {
         long count = 0;
-        try (LogManager logManager = LogManager.open(databaseBase.toString());
-             LogManager.LogReader reader = logManager.getReader()) {
+        try (WriteAheadLogger walLogger = WriteAheadLogger.open(databaseBase.toString());
+             WriteAheadLogger.Reader reader = walLogger.getReader()) {
             while (true) {
                 LogRecord record = reader.next();
                 if (record == null) {

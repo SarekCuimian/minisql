@@ -3,7 +3,7 @@ package com.minisql.engine.transaction.mvcc;
 import java.util.HashMap;
 import java.util.Map;
 
-import com.minisql.engine.transaction.status.TransactionManagerImpl;
+import com.minisql.engine.transaction.xid.XidAllocator;
 
 // vm对一个事务的抽象
 public class Transaction {
@@ -28,7 +28,7 @@ public class Transaction {
             tx.activeSnapshot = new HashMap<>();
             for(Transaction transaction : active.values()) {
                 // SUPER_XID 与进程内只读 XID 都不会出现在持久化记录中，无需进入快照。
-                if (transaction.xid > TransactionManagerImpl.SUPER_XID) {
+                if (transaction.xid > XidAllocator.SYSTEM_XID) {
                     tx.activeSnapshot.put(transaction.xid, true);
                 }
             }
@@ -37,7 +37,7 @@ public class Transaction {
     }
 
     public static Transaction newReadOnlyTransaction(long xid) {
-        if (xid >= TransactionManagerImpl.SUPER_XID) {
+        if (xid >= XidAllocator.SYSTEM_XID) {
             throw new IllegalArgumentException(
                     "read-only xid must be negative: " + xid
             );
@@ -57,7 +57,7 @@ public class Transaction {
         if(activeSnapshot == null) {
             return false;
         }
-        if(xid == TransactionManagerImpl.SUPER_XID) {
+        if(xid == XidAllocator.SYSTEM_XID) {
             return false;
         }
         return activeSnapshot.containsKey(xid);

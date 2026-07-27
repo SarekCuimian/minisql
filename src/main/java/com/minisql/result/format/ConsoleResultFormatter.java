@@ -8,9 +8,8 @@ import com.minisql.result.ResultSet;
 /**
  * 控制台结果格式化器
  */
-public class ConsoleResultFormatter implements ResultFormatter {
+public final class ConsoleResultFormatter {
 
-    @Override
     public byte[] format(ExecutionResult result) {
         if (result.getType() == ExecutionResult.Type.RESULT) {
             return formatResultSet(result);

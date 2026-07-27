@@ -32,7 +32,10 @@ public class SessionManager implements DisposableBean {
      * 创建一个新的 session，并返回 sessionId。
      */
     public String createSession() throws IOException {
-        MiniSqlSession session = new MiniSqlSessionImpl(config.getHost(), config.getPort());
+        MiniSqlSession session = new MiniSqlSession(
+                config.getHost(),
+                config.getPort()
+        );
         String sessionId = UUID.randomUUID().toString();
         managed.put(sessionId, new ManagedSession(session));
         return sessionId;

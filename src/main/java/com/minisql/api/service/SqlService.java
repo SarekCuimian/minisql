@@ -5,7 +5,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import com.minisql.result.format.ConsoleResultFormatter;
 import com.minisql.result.ExecutionResult;
-import com.minisql.result.format.ResultFormatter;
 import com.minisql.api.dto.ResponseFormat;
 import com.minisql.api.dto.SqlExecutionResultDto;
 import com.minisql.api.dto.response.SqlExecutionResponse;
@@ -20,7 +19,8 @@ public class SqlService {
     private static final Logger LOGGER = LoggerFactory.getLogger(SqlService.class);
 
     private final SessionManager sessionRegistry;
-    private final ResultFormatter formatter = new ConsoleResultFormatter();
+    private final ConsoleResultFormatter formatter =
+            new ConsoleResultFormatter();
 
     public SqlService(SessionManager sessionManager) {
         this.sessionRegistry = sessionManager;

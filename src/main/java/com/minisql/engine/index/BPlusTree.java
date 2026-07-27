@@ -11,7 +11,7 @@ import com.minisql.engine.storage.record.PageRecord;
 import com.minisql.engine.index.Node.ChildLookupResult;
 import com.minisql.engine.index.Node.InsertResult;
 import com.minisql.engine.index.Node.RangeSearchResult;
-import com.minisql.engine.transaction.status.TransactionManagerImpl;
+import com.minisql.engine.transaction.xid.XidAllocator;
 import com.minisql.engine.storage.codec.ByteUtil;
 
 public class BPlusTree {
@@ -22,10 +22,10 @@ public class BPlusTree {
 
     public static long create(PageRecordManager pageRecordManager) throws Exception {
         byte[] rootBytes = Node.newEmptyRootBytes();
-        long rootUid = pageRecordManager.insert(TransactionManagerImpl.SUPER_XID, rootBytes);
+        long rootUid = pageRecordManager.insert(XidAllocator.SYSTEM_XID, rootBytes);
         byte[] rootPointer = new byte[Long.BYTES];
         ByteUtil.putLong(rootPointer, 0, rootUid);
-        return pageRecordManager.insert(TransactionManagerImpl.SUPER_XID, rootPointer);
+        return pageRecordManager.insert(XidAllocator.SYSTEM_XID, rootPointer);
     }
 
     public static BPlusTree load(long bootUid, PageRecordManager pageRecordManager) throws Exception {
@@ -53,11 +53,11 @@ public class BPlusTree {
         bootLock.lock();
         try {
             byte[] rootBytes = Node.newRootBytes(leftUid, rightUid, separatorKey);
-            long newRootUid = pageRecordManager.insert(TransactionManagerImpl.SUPER_XID, rootBytes);
+            long newRootUid = pageRecordManager.insert(XidAllocator.SYSTEM_XID, rootBytes);
             bootRecord.startUpdate();
             ByteSlice payload = bootRecord.payload();
             ByteUtil.putLong(payload.bytes(), payload.offset(), newRootUid);
-            bootRecord.finishUpdate(TransactionManagerImpl.SUPER_XID);
+            bootRecord.finishUpdate(XidAllocator.SYSTEM_XID);
         } finally {
             bootLock.unlock();
         }

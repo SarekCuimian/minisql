@@ -13,7 +13,7 @@ import com.minisql.engine.storage.codec.MalformedDataException;
 /**
  * WAL 逻辑 payload 的唯一编码与解码入口。
  *
- * <p>物理记录头由 {@link LogManagerImpl} 负责；本类只处理 payload 内部格式。</p>
+ * <p>物理记录头由 {@link WriteAheadLogger} 负责；本类只处理 payload 内部格式。</p>
  */
 public final class LogRecordCodec {
 

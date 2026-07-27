@@ -9,7 +9,7 @@ import com.minisql.engine.sql.ast.expression.SingleExpression;
 import com.minisql.engine.sql.ast.operator.CompareOperator;
 import com.minisql.engine.storage.codec.ByteReader;
 import com.minisql.engine.storage.codec.ByteWriter;
-import com.minisql.engine.transaction.status.TransactionManagerImpl;
+import com.minisql.engine.transaction.xid.XidAllocator;
 import com.minisql.error.Panic;
 import com.minisql.error.Error;
 
@@ -37,7 +37,7 @@ public class Field {
     public static Field load(Table tb, long uid) {
         byte[] fieldBytes = null;
         try {
-            fieldBytes = tb.vm.read(TransactionManagerImpl.SUPER_XID, uid);
+            fieldBytes = tb.vm.read(XidAllocator.SYSTEM_XID, uid);
         } catch (Exception e) {
             Panic.of(e);
         }
@@ -154,7 +154,7 @@ public class Field {
         if(uids == null || uids.isEmpty()) {
             return;
         }
-        TableManagerImpl tm = (TableManagerImpl)tb.tbm;
+        TableManager tm = tb.tbm;
         for (Long uid : uids) {
             if(selfUid != null && selfUid.equals(uid)) {
                 continue;

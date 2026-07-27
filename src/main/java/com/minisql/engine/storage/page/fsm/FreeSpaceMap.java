@@ -5,7 +5,7 @@ import java.util.Deque;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-import com.minisql.engine.storage.page.PageCache;
+import com.minisql.engine.storage.page.PageBufferPool;
 
 /**
  * 记录每个页面剩余空间大小
@@ -18,7 +18,7 @@ public class FreeSpaceMap {
     /**
      * 每个区间大小为 1/40 页面大小
      */
-    private static final int LEVEL_SIZE = PageCache.PAGE_SIZE / LEVEL_COUNT;
+    private static final int LEVEL_SIZE = PageBufferPool.PAGE_SIZE / LEVEL_COUNT;
 
     private final Lock lock;
 

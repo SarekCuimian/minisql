@@ -34,9 +34,9 @@ read-only transaction。
 ```mermaid
 sequenceDiagram
     participant R as PageRecordManager
-    participant L as LogManager
+    participant L as WriteAheadLogger
     participant P as Page
-    participant C as PageCache / PageCleaner
+    participant C as PageBufferPool / PageCleaner
     participant F as Data file
 
     R->>L: append Insert / Update log
@@ -60,13 +60,17 @@ sequenceDiagram
     participant E as Executor
     participant T as TableManager
     participant V as VersionManager
-    participant X as TransactionManager
+    participant A as XidAllocator
+    participant X as XidStatusTable
+    participant W as WAL / ATT
 
     C->>E: BEGIN
     E->>T: begin
     T->>V: begin
-    V->>X: allocate XID
-    X-->>V: xid
+    V->>A: allocate XID
+    A-->>V: xid
+    V->>X: record IN_PROGRESS
+    V->>W: append BEGIN and register ATT
     V-->>E: xid retained by Executor
     C->>E: INSERT or UPDATE or SELECT
     E->>T: execute with xid
@@ -74,7 +78,9 @@ sequenceDiagram
     C->>E: COMMIT
     E->>T: commit xid
     T->>V: commit xid
-    V->>X: mark committed
+    V->>W: append and flush COMMIT
+    V->>X: record COMMITTED
+    V->>W: append END and remove ATT
     E-->>C: commit result
 ```
 
@@ -117,7 +123,7 @@ sequenceDiagram
     participant R as Reader transaction
     participant V as VersionManager
     participant E as Entry
-    participant X as TransactionManager
+    participant X as XidStatusTable
 
     W->>V: update record
     V->>E: write XMAX and new version
@@ -134,14 +140,14 @@ sequenceDiagram
 
 visibility 由 XID status、reader snapshot 与 isolation level 共同决定。`READ COMMITTED` 和 `REPEATABLE READ` 的差异应在 transaction tests 中体现。
 
-## PageCache 并发加载
+## PageBufferPool 并发加载
 
 ```mermaid
 sequenceDiagram
     participant A as Thread A
     participant B as Thread B
     participant C as AbstractCache
-    participant P as PageCache
+    participant P as PageBufferPool
     participant F as Data file
 
     A->>C: get page key
@@ -164,9 +170,9 @@ sequenceDiagram
 sequenceDiagram
     participant O as Database open
     participant R as Recovery
-    participant L as LogManager
-    participant P as PageCache
-    participant X as TransactionManager
+    participant L as WriteAheadLogger
+    participant P as PageBufferPool
+    participant X as XidStatusTable
 
     O->>R: recover
     R->>L: Analysis from checkpointLsn
@@ -176,7 +182,8 @@ sequenceDiagram
     R->>L: follow loser prevLsn chains
     R->>L: append CLR before compensation
     R->>P: apply compensation image
-    R->>X: persist aborted status and END
+    R->>X: persist ABORTED status
+    R->>L: append and flush END
 ```
 
 Recovery 从最近完整 fuzzy checkpoint 开始 Analysis。Redo 对 DPT 中可能缺失的
@@ -190,8 +197,8 @@ sequenceDiagram
     participant R as PageRecordManager
     participant D as DirtyPageTable
     participant C as PageCleaner
-    participant P as PageCache
-    participant L as LogManager
+    participant P as PageBufferPool
+    participant L as WriteAheadLogger
     participant F as Data file
 
     R->>D: mark page dirty with recLSN

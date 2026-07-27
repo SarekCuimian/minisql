@@ -2,7 +2,9 @@
 
 ## Transaction 与 MVCC
 
-- `TransactionManager` 持久化 XID status，并记录 transaction 的 last LSN。
+- `XidAllocator` 管理 `.xid` 文件、格式迁移和区间预留，并分配永不复用的正数 XID。
+- `XidStatusTable` 维护 `UNUSED / IN_PROGRESS / COMMITTED / ABORTED` 状态。
+- `ActiveTransactionTable` 属于 WAL，维护 transaction phase 与 `lastLsn`。
 - `VersionManager` 负责 visibility、transaction begin / commit / abort 与 lock coordination。
 - Entry 的 MVCC header 包含 `XMIN`、`XMAX`；其 payload 是 table 层编码的 row bytes。
 - 独立的 `SELECT` / `SHOW` / `DESCRIBE` 使用负数进程内 read-only XID；它只参与
@@ -22,7 +24,7 @@ rowBytes
 ## Cache、latch 与 I/O
 
 - `AbstractCache` 负责按 key 的对象 cache、reference count、in-flight load coordination 与 eviction。
-- `PageCacheImpl` 管理 Page load、allocation、dirty-page tracker 与 background cleaner。
+- `PageBufferPool` 管理 Page load、allocation、dirty-page tracker 与 background cleaner。
 - Page 使用 read/write latch：读可并行；同页 physical write 串行，避免 FSO 与字节区域并发修改损坏。
 - File I/O 的 access、allocation 与 `force` 有独立协调，避免普通 positioned read/write 被全局 force 串行化。
 

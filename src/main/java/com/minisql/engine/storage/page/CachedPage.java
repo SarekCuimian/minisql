@@ -4,7 +4,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import com.minisql.engine.storage.page.PageCache;
+import com.minisql.engine.storage.page.PageBufferPool;
 
 public class CachedPage implements Page {
     
@@ -17,12 +17,12 @@ public class CachedPage implements Page {
     private final Lock rLock;
     private final Lock wLock;
     
-    private final PageCache cache;
+    private final PageBufferPool cache;
 
-    public CachedPage(int pageNumber, byte[] bytes, PageCache pageCache) {
+    public CachedPage(int pageNumber, byte[] bytes, PageBufferPool bufferPool) {
         this.pageNumber = pageNumber;
         this.bytes = bytes;
-        this.cache = pageCache;
+        this.cache = bufferPool;
         ReadWriteLock lock = new ReentrantReadWriteLock();
         this.rLock = lock.readLock();
         this.wLock = lock.writeLock();

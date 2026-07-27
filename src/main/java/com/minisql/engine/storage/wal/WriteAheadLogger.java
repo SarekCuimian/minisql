@@ -18,7 +18,7 @@ import com.minisql.error.Panic;
 import com.minisql.error.Error;
 
 /**
- * 日志管理器（append / writer / flusher 三阶段）
+ * Write-ahead logger，负责 WAL 的 append / writer / flusher 三阶段。
  *
  * 文件格式：
  * Header(32B):
@@ -30,7 +30,7 @@ import com.minisql.error.Error;
  *
  * LSN = record 在文件中的结束偏移（byte offset）
  */
-public class LogManagerImpl implements LogManager {
+public final class WriteAheadLogger implements AutoCloseable {
 
     private static final int MAGIC = 0x524C4F47; // "RLOG"
     private static final int VERSION = 5;
@@ -94,11 +94,11 @@ public class LogManagerImpl implements LogManager {
     /** log flusher 线程 */
     private Thread flusher;
 
-    public static LogManagerImpl create(String path) {
+    public static WriteAheadLogger create(String path) {
         return create(path, DEFAULT_LOG_BUFFER_CAPACITY);
     }
 
-    public static LogManagerImpl create(String path, int bufferSize) {
+    public static WriteAheadLogger create(String path, int bufferSize) {
         File f = new File(path + LOG_SUFFIX);
         try {
             if (!f.createNewFile()) {
@@ -120,17 +120,18 @@ public class LogManagerImpl implements LogManager {
             Panic.of(e);
         }
 
-        LogManagerImpl lgm = new LogManagerImpl(f, raf, fc, bufferSize);
-        lgm.initLogFile();
-        lgm.startWorkerThreads();
-        return lgm;
+        WriteAheadLogger walLogger =
+                new WriteAheadLogger(f, raf, fc, bufferSize);
+        walLogger.initLogFile();
+        walLogger.startWorkerThreads();
+        return walLogger;
     }
 
-    public static LogManagerImpl open(String path) {
+    public static WriteAheadLogger open(String path) {
         return open(path, DEFAULT_LOG_BUFFER_CAPACITY);
     }
 
-    public static LogManagerImpl open(String path, int bufferSize) {
+    public static WriteAheadLogger open(String path, int bufferSize) {
         File f = new File(path + LOG_SUFFIX);
         if (!f.exists()) {
             Panic.of(Error.FileNotExistsException);
@@ -148,14 +149,20 @@ public class LogManagerImpl implements LogManager {
             Panic.of(e);
         }
 
-        LogManagerImpl lgm = new LogManagerImpl(f, raf, fc, bufferSize);
-        lgm.loadHeader();
-        lgm.trimBadTail();
-        lgm.startWorkerThreads();
-        return lgm;
+        WriteAheadLogger walLogger =
+                new WriteAheadLogger(f, raf, fc, bufferSize);
+        walLogger.loadHeader();
+        walLogger.trimBadTail();
+        walLogger.startWorkerThreads();
+        return walLogger;
     }
 
-    private LogManagerImpl(File logFile, RandomAccessFile raf, FileChannel channel, int bufferSize) {
+    private WriteAheadLogger(
+            File logFile,
+            RandomAccessFile raf,
+            FileChannel channel,
+            int bufferSize
+    ) {
         this.logFile = logFile;
         this.raf = raf;
         this.channel = channel;
@@ -163,7 +170,6 @@ public class LogManagerImpl implements LogManager {
     }
 
     /** 追加 payload，并返回包含 WAL interval 的完整物理记录。 */
-    @Override
     public LogRecord append(byte[] payload) {
         if (payload == null) {
             throw new IllegalArgumentException("payload is null");
@@ -210,7 +216,6 @@ public class LogManagerImpl implements LogManager {
      * - commit：flush(commitLsn)
      * - 刷页前：flush(pageLsn) (WAL)
      */
-    @Override
     public void flush(long lsn) {
         lock.lock();
         try {
@@ -237,7 +242,6 @@ public class LogManagerImpl implements LogManager {
         }
     }
 
-    @Override
     public long getFlushedLsn() {
         lock.lock();
         try {
@@ -247,7 +251,6 @@ public class LogManagerImpl implements LogManager {
         }
     }
 
-    @Override
     public long getWrittenLsn() {
         lock.lock();
         try {
@@ -257,7 +260,6 @@ public class LogManagerImpl implements LogManager {
         }
     }
 
-    @Override
     public long getCheckpointLsn() {
         lock.lock();
         try {
@@ -271,7 +273,6 @@ public class LogManagerImpl implements LogManager {
      * 更新 checkpointLsn（这里只负责把值持久化到 header，真正的“刷脏页”应由外部保证）。
      * 由于 header 只在 flusher 中写入，因此这里唤醒 flusher 尽快写 header + force。
      */
-    @Override
     public void setCheckpointLsn(long lsn) {
         long durableLsn;
         lock.lock();
@@ -295,12 +296,10 @@ public class LogManagerImpl implements LogManager {
         }
     }
 
-    @Override
-    public LogManager.LogReader getReader() {
-        return new LogReader(logFile);
+    public Reader getReader() {
+        return new Reader(logFile);
     }
 
-    @Override
     public void close() {
         // 保证 LSN <= currentLsn 的日志都落盘
         flush(currentLsn);
@@ -352,7 +351,6 @@ public class LogManagerImpl implements LogManager {
         
         private final ByteBuffer writeAheadBuffer = ByteBuffer.allocate(WRITE_BUFFER_CAPACITY);
 
-        @Override
         public void run() {
             while (running) {
                 // 从环形缓冲区读出到 chunk 暂存
@@ -414,7 +412,6 @@ public class LogManagerImpl implements LogManager {
      * flusher：把 written 的数据 force 到磁盘（durable），推进 flushedLsn，并持久化 header
      */
     private final class LogFlusher implements Runnable {
-        @Override
         public void run() {
             while (running) {
                 long target;
@@ -677,13 +674,13 @@ public class LogManagerImpl implements LogManager {
      * 只读 reader，用于启动恢复，默认 fileSize 固定为打开时长度
      * 理论上要具备从checkpoint开始读的能力
      */
-    private static final class LogReader implements LogManager.LogReader {
+    public static final class Reader implements AutoCloseable {
         private final RandomAccessFile raf;
         private final FileChannel channel;
         private final long fileSize;
         private long position;
 
-        private LogReader(File file) {
+        private Reader(File file) {
             try {
                 this.raf = new RandomAccessFile(file, "r");
                 this.channel = raf.getChannel();
@@ -694,7 +691,6 @@ public class LogManagerImpl implements LogManager {
             this.position = WAL_HEADER_SIZE;
         }
 
-        @Override
         public LogRecord next() {
             if (position + WAL_RECORD_HEADER_SIZE > fileSize) {
                 return null;
@@ -737,22 +733,18 @@ public class LogManagerImpl implements LogManager {
             return new LogRecord(startLsn, endLsn, payload);
         }
 
-        @Override
         public void rewind() {
             position = WAL_HEADER_SIZE;
         }
 
-        @Override
         public void seek(long lsn) {
             position = Math.max(lsn, WAL_HEADER_SIZE);
         }
 
-        @Override
         public long position() {
             return position;
         }
 
-        @Override
         public void close() {
             try {
                 channel.close();

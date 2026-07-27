@@ -1,5 +1,7 @@
 package com.minisql.engine.storage.page;
 
+import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
@@ -18,7 +20,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.minisql.engine.cache.AbstractCache;
-import com.minisql.engine.storage.wal.LogManager;
+import com.minisql.engine.storage.wal.WriteAheadLogger;
 import com.minisql.engine.storage.wal.CheckpointManager;
 import com.minisql.engine.storage.page.Page;
 import com.minisql.engine.storage.page.CachedPage;
@@ -26,9 +28,10 @@ import com.minisql.engine.storage.io.FileChannelUtil;
 import com.minisql.error.Panic;
 import com.minisql.error.Error;
 
-public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
+public final class PageBufferPool extends AbstractCache<Page> implements AutoCloseable {
 
     // Constants
+    public static final int PAGE_SIZE = 1 << 13;
     private static final int MIN_CACHE_PAGE_COUNT = 10;
     private static final long FLUSH_INTERVAL_MS = 1000L;
     private static final int MAX_PAGES_PER_BATCH = 64;
@@ -55,14 +58,18 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
     private Thread pageCleaner;
 
     private volatile boolean closing;
-    private volatile LogManager logManager;
+    private volatile WriteAheadLogger walLogger;
     private volatile CheckpointManager checkpointManager;
 
     private final ReentrantLock cleanerLock = new ReentrantLock();
     private final Condition hasDirtyPage = cleanerLock.newCondition();
 
     // Constructor
-    PageCacheImpl(RandomAccessFile file, FileChannel fileChannel, int capacity) {
+    private PageBufferPool(
+            RandomAccessFile file,
+            FileChannel fileChannel,
+            int capacity
+    ) {
         super(capacity);
         if (capacity < MIN_CACHE_PAGE_COUNT) {
             Panic.of(Error.MemTooSmallException);
@@ -81,15 +88,58 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         this.pageNumberCounter = new AtomicInteger((int) length / PAGE_SIZE);
     }
 
+    public static PageBufferPool create(String path, long memory) {
+        File file = new File(path + DB_SUFFIX);
+        try {
+            if (!file.createNewFile()) {
+                Panic.of(Error.FileExistsException);
+            }
+        } catch (IOException exception) {
+            Panic.of(exception);
+        }
+        requireReadableAndWritable(file);
+        return openFile(file, memory);
+    }
+
+    public static PageBufferPool open(String path, long memory) {
+        File file = new File(path + DB_SUFFIX);
+        if (!file.exists()) {
+            Panic.of(Error.FileNotExistsException);
+        }
+        requireReadableAndWritable(file);
+        return openFile(file, memory);
+    }
+
+    private static PageBufferPool openFile(File file, long memory) {
+        try {
+            RandomAccessFile randomAccessFile =
+                    new RandomAccessFile(file, "rw");
+            return new PageBufferPool(
+                    randomAccessFile,
+                    randomAccessFile.getChannel(),
+                    (int) (memory / PAGE_SIZE)
+            );
+        } catch (FileNotFoundException exception) {
+            Panic.of(exception);
+            throw new IllegalStateException(
+                    "Unable to open page file: " + file,
+                    exception
+            );
+        }
+    }
+
+    private static void requireReadableAndWritable(File file) {
+        if (!file.canRead() || !file.canWrite()) {
+            Panic.of(Error.FileCannotRWException);
+        }
+    }
+
     // Dependency injection
-    @Override
-    public void setLogManager(LogManager logManager) {
-        this.logManager = logManager;
+    public void setWalLogger(WriteAheadLogger walLogger) {
+        this.walLogger = walLogger;
         // 启动 PageCleaner 线程
         startPageCleaner();
     }
-
-    @Override
     public void setCheckpointManager(CheckpointManager checkpointManager) {
         this.checkpointManager = checkpointManager;
     }
@@ -124,7 +174,6 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
     }
 
     /** 持久化 MetaPage */
-    @Override
     public void persistMetaPage(Page page) {
         persist(page);
     }
@@ -156,7 +205,6 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
      * 直接扫描文件中获取页号与空闲空间大小
      * @return 所有页号与空闲空间大小的 map
      */
-    @Override
     public Map<Integer, Integer> getPageFreeMap() {
         int pageCount = getPageCount();
         Map<Integer, Integer> map = new HashMap<>(Math.max(16, pageCount));
@@ -176,10 +224,6 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         }
         return map;
     }
-
-
-
-    @Override
     protected boolean isEvictable(Page pg) {
         // 脏页不允许被直接淘汰
         return !pg.isDirty();
@@ -188,7 +232,6 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
     /**
      * 根据 pageNumber 从数据库文件中读取页数据，并包裹成 Page
      */
-    @Override
     protected Page loadCache(long key) throws Exception {
         int pgno = (int) key;
         long offset = getPageOffset(pgno);
@@ -207,17 +250,10 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
         }
         return new CachedPage(pgno, buf.array(), this);
     }
-
-
-    @Override
     protected void flushCache(Page pg) {
         // 该路径暂时不参与刷脏页 
         return;
     }
-
-
-
-    @Override
     public void markDirtyPage(int pgno, long recLsn) {
         boolean firstDirtied = dirtyPageTable.mark(pgno, recLsn);
         // 当第一次页变脏时候触发
@@ -230,8 +266,6 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
             }
         }
     }
-
-    @Override
     public Map<Integer, Long> snapshotDirtyPages() {
         return dirtyPageTable.snapshot();
     }
@@ -273,7 +307,6 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
 
 
     private final class PageCleaner implements Runnable {
-        @Override
         public void run() {
             List<PageSnapshot> candidates = new ArrayList<>(MAX_PAGES_PER_BATCH);
             while (cleanerRunning) {
@@ -394,7 +427,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
                     return null;
                 }
                 snapshotPageLsn = pg.getPageLsn();
-                long flushedLsn = logManager.getFlushedLsn();
+                long flushedLsn = walLogger.getFlushedLsn();
                 if (snapshotPageLsn > flushedLsn) {
                     needLogFlush = true;
                 } else {
@@ -406,7 +439,7 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
 
             // 锁外阻塞式推进日志刷盘，保证 WAL
             if (needLogFlush) {
-                logManager.flush(snapshotPageLsn);
+                walLogger.flush(snapshotPageLsn);
                 continue;
             }
             // 文件锁内写入文件，暂不 force，后续合并 force
@@ -499,8 +532,6 @@ public class PageCacheImpl extends AbstractCache<Page> implements PageCache {
             forceLock.unlock();
         }
     }
-
-    @Override
     public void close() {
         allocationLock.lock();
         try {

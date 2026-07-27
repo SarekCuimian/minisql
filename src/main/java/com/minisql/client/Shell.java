@@ -13,7 +13,6 @@ import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import com.minisql.result.format.ConsoleResultFormatter;
 import com.minisql.result.ExecutionResult;
-import com.minisql.result.format.ResultFormatter;
 
 public class Shell {
     private static final String ANSI_RESET = "\u001B[0m";
@@ -21,7 +20,8 @@ public class Shell {
     private static final String PROMPT = ANSI_CYAN + "sql> " + ANSI_RESET;
     private static final String CONT_PROMPT = ANSI_CYAN + "  -> " + ANSI_RESET;
     private final Client client;
-    private final ResultFormatter formatter = new ConsoleResultFormatter();
+    private final ConsoleResultFormatter formatter =
+            new ConsoleResultFormatter();
 
     public Shell(Client client) {
         this.client = client;

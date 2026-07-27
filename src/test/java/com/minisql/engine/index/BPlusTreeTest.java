@@ -7,9 +7,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import com.minisql.engine.storage.record.PageRecordManager;
-import com.minisql.engine.storage.page.PageCache;
-import com.minisql.engine.transaction.status.MockTransactionManager;
-import com.minisql.engine.transaction.status.TransactionManager;
+import com.minisql.engine.storage.page.PageBufferPool;
+import com.minisql.engine.storage.wal.ActiveTransactionTable;
+import com.minisql.engine.transaction.xid.XidAllocator;
+import com.minisql.engine.transaction.xid.XidStatusTable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -20,8 +21,14 @@ public class BPlusTreeTest {
 
     @Test
     public void testTreeSingle() throws Exception {
-        TransactionManager txm = new MockTransactionManager();
-        PageRecordManager pageRecordManager = PageRecordManager.create(tempDir.resolve("TestTreeSingle").toString(), PageCache.PAGE_SIZE * 1024, txm);
+        String path = tempDir.resolve("TestTreeSingle").toString();
+        XidAllocator xidAllocator = XidAllocator.create(path);
+        PageRecordManager pageRecordManager = PageRecordManager.create(
+                path,
+                PageBufferPool.PAGE_SIZE * 1024,
+                new XidStatusTable(xidAllocator),
+                new ActiveTransactionTable()
+        );
 
         long root = BPlusTree.create(pageRecordManager);
         BPlusTree tree = BPlusTree.load(root, pageRecordManager);
@@ -38,5 +45,6 @@ public class BPlusTreeTest {
         }
 
         pageRecordManager.close();
+        xidAllocator.close();
     }
 }

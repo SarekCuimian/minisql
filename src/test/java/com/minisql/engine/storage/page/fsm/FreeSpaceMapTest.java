@@ -4,7 +4,7 @@ import com.minisql.engine.storage.page.fsm.FreeSpaceMap;
 import com.minisql.engine.storage.page.fsm.FreeSpace;
 import org.junit.jupiter.api.Test;
 
-import com.minisql.engine.storage.page.PageCache;
+import com.minisql.engine.storage.page.PageBufferPool;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -13,7 +13,7 @@ public class FreeSpaceMapTest {
     @Test
     public void testPageIndex() {
         FreeSpaceMap pIndex = new FreeSpaceMap();
-        int threshold = PageCache.PAGE_SIZE / 20;
+        int threshold = PageBufferPool.PAGE_SIZE / 20;
         for(int i = 0; i < 20; i ++) {
             pIndex.add(i, i*threshold);
             pIndex.add(i, i*threshold);

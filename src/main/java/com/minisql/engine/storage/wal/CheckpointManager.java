@@ -6,8 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.locks.Lock;
 
-import com.minisql.engine.storage.page.PageCache;
-import com.minisql.engine.transaction.status.TransactionManager;
+import com.minisql.engine.storage.page.PageBufferPool;
 
 /**
  * 创建不阻塞事务与 PageCleaner 的 fuzzy checkpoint。
@@ -16,28 +15,28 @@ public final class CheckpointManager {
 
     private static final int MAX_ENTRIES_PER_CHUNK = 256;
 
-    private final LogManager logManager;
-    private final PageCache pageCache;
-    private final TransactionManager transactionManager;
+    private final WriteAheadLogger walLogger;
+    private final PageBufferPool bufferPool;
+    private final ActiveTransactionTable activeTransactionTable;
     private final Lock snapshotLock;
 
     public CheckpointManager(
-            LogManager logManager,
-            PageCache pageCache,
-            TransactionManager transactionManager,
+            WriteAheadLogger walLogger,
+            PageBufferPool bufferPool,
+            ActiveTransactionTable activeTransactionTable,
             Lock snapshotLock
     ) {
-        this.logManager = java.util.Objects.requireNonNull(
-                logManager,
-                "logManager must not be null"
+        this.walLogger = java.util.Objects.requireNonNull(
+                walLogger,
+                "walLogger must not be null"
         );
-        this.pageCache = java.util.Objects.requireNonNull(
-                pageCache,
-                "pageCache must not be null"
+        this.bufferPool = java.util.Objects.requireNonNull(
+                bufferPool,
+                "bufferPool must not be null"
         );
-        this.transactionManager = java.util.Objects.requireNonNull(
-                transactionManager,
-                "transactionManager must not be null"
+        this.activeTransactionTable = java.util.Objects.requireNonNull(
+                activeTransactionTable,
+                "activeTransactionTable must not be null"
         );
         this.snapshotLock = java.util.Objects.requireNonNull(
                 snapshotLock,
@@ -46,7 +45,7 @@ public final class CheckpointManager {
     }
 
     public synchronized long checkpoint() {
-        LogRecord beginRecord = logManager.append(
+        LogRecord beginRecord = walLogger.append(
                 LogRecordCodec.encodeBeginCheckpoint()
         );
         long beginCheckpointLsn = beginRecord.getStartLsn();
@@ -55,15 +54,15 @@ public final class CheckpointManager {
         Map<Long, ActiveTransaction> activeTransactions;
         snapshotLock.lock();
         try {
-            dirtyPages = pageCache.snapshotDirtyPages();
-            activeTransactions = transactionManager.snapshotActiveTransactions();
+            dirtyPages = bufferPool.snapshotDirtyPages();
+            activeTransactions = activeTransactionTable.snapshot();
         } finally {
             snapshotLock.unlock();
         }
 
         List<Map<Integer, Long>> dptChunks = partition(dirtyPages);
         for (int chunkIndex = 0; chunkIndex < dptChunks.size(); chunkIndex++) {
-            logManager.append(
+            walLogger.append(
                     LogRecordCodec.encodeCheckpointDpt(
                             beginCheckpointLsn,
                             chunkIndex,
@@ -75,7 +74,7 @@ public final class CheckpointManager {
         List<Map<Long, ActiveTransaction>> attChunks =
                 partition(activeTransactions);
         for (int chunkIndex = 0; chunkIndex < attChunks.size(); chunkIndex++) {
-            logManager.append(
+            walLogger.append(
                     LogRecordCodec.encodeCheckpointAtt(
                             beginCheckpointLsn,
                             chunkIndex,
@@ -84,15 +83,15 @@ public final class CheckpointManager {
             );
         }
 
-        LogRecord endRecord = logManager.append(
+        LogRecord endRecord = walLogger.append(
                 LogRecordCodec.encodeEndCheckpoint(
                         beginCheckpointLsn,
                         dptChunks.size(),
                         attChunks.size()
                 )
         );
-        logManager.flush(endRecord.getEndLsn());
-        logManager.setCheckpointLsn(beginCheckpointLsn);
+        walLogger.flush(endRecord.getEndLsn());
+        walLogger.setCheckpointLsn(beginCheckpointLsn);
         return beginCheckpointLsn;
     }
 

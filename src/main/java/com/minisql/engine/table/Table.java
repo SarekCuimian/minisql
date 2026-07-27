@@ -28,7 +28,7 @@ import com.minisql.engine.sql.ast.expression.Operand;
 import com.minisql.engine.sql.execution.aggregate.AggregateContext;
 import com.minisql.engine.sql.ast.operator.CompareOperator;
 import com.minisql.engine.sql.ast.operator.LogicOperator;
-import com.minisql.engine.transaction.status.TransactionManagerImpl;
+import com.minisql.engine.transaction.xid.XidAllocator;
 import com.minisql.error.Panic;
 import com.minisql.engine.transaction.mvcc.VersionManager;
 import com.minisql.result.ResultSet;
@@ -84,7 +84,7 @@ public class Table {
         byte[] tableBytes = null;
         try {
             // 使用超级事务 SUPER_XID 去加载数据表
-            tableBytes = tbm.getVersionManager().read(TransactionManagerImpl.SUPER_XID, uid);
+            tableBytes = tbm.getVersionManager().read(XidAllocator.SYSTEM_XID, uid);
         } catch (Exception e) {
             Panic.of(e);
         }

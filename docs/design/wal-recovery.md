@@ -16,7 +16,7 @@
 | 名称 | 语义 | 持久化位置 |
 |---|---|---|
 | `startLsn` | WAL record 的起始位置，供 reader 定位和解析 | WAL record 的物理位置 |
-| `endLsn` | WAL record 的结束位置，代表完整 record 覆盖边界 | WAL record header 与 LogManager 边界 |
+| `endLsn` | WAL record 的结束位置，代表完整 record 覆盖边界 | WAL record header 与 WriteAheadLogger 边界 |
 | page LSN | 最后修改 Page 的 `endLsn` | Page header |
 | recovery LSN | 首次使 Page 变脏的 `startLsn` | 运行时 DPT，M6 写入 checkpoint record |
 | `flushedLsn` | 已 durable 的 WAL 结束边界 | WAL header |
@@ -220,7 +220,7 @@ M1–M6 已完成实现与验收。M7 Page 生命周期与 M8 WAL retention 按�
 - 新增公共 `PageHeader`，在 Page 起始位置保存 8-byte page LSN。
 - DataPage 的 FSO 由 offset 0 后移至 offset 8，record area 起点相应后移。
 - `CachedPage` 从 Page bytes 读写 page LSN，移除独立易失副本。
-- `LogReader` 向 Recovery 暴露当前 record 的 `endLsn`。
+- `WriteAheadLogger.Reader` 向 Recovery 暴露当前 record 的 `endLsn`。
 - REDO 根据 page LSN 与 record `endLsn` 判断是否跳过。
 - 增加 database page-format version；直接切换新格式，旧开发数据库删除后重建，打开旧文件必须 fail fast。
 
@@ -239,8 +239,7 @@ M1–M6 已完成实现与验收。M7 Page 生命周期与 M8 WAL retention 按�
 
 ```text
 engine.storage.wal
-├── LogManager
-├── LogManagerImpl
+├── WriteAheadLogger
 ├── LogRecord
 ├── LogRecordType
 ├── LogRecordCodec
@@ -256,7 +255,7 @@ LogRecord next();
 ```
 
 `LogRecord` 是完整物理记录，直接包含 `startLsn`、`endLsn` 与 `payload`。调用者向
-`append` 提交尚未分配位置的 payload；`LogManager` 分配连续区间、完成 framing
+`append` 提交尚未分配位置的 payload；`WriteAheadLogger` 分配连续区间、完成 framing
 并返回已定位的 `LogRecord`。不再增加 `LogEntry`、`LocatedLogRecord` 或读取结果
 包装类。
 
@@ -287,7 +286,7 @@ LogRecord next();
 - 新增顶层值对象 `ActiveTransaction`，保存 `XID`、status 与 `lastLsn`；
   `ActiveTransactionTable` 只负责并发维护与快照。
 - `prevLsn`、`lastLsn` 统一保存 record `startLsn`。
-- 修正当前 `TransactionManager.updateLastLsn(xid, endLsn)` 语义。
+- `ActiveTransactionTable` 独立维护 `lastLsn`，不再由 XID 状态组件承担。
 
 ### 写入顺序
 

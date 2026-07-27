@@ -3,7 +3,7 @@ package com.minisql.engine.storage.page;
 import java.util.Arrays;
 
 import com.minisql.engine.storage.codec.ByteUtil;
-import com.minisql.engine.storage.page.PageCache;
+import com.minisql.engine.storage.page.PageBufferPool;
 import com.minisql.engine.storage.page.RandomUtil;
 
 /**
@@ -37,7 +37,7 @@ public final class MetaPage {
      * @return 初始化后的 page bytes
      */
     public static byte[] newPageBytes() {
-        byte[] pageBytes = new byte[PageCache.PAGE_SIZE];
+        byte[] pageBytes = new byte[PageBufferPool.PAGE_SIZE];
         ByteUtil.putInt(pageBytes, FORMAT_MAGIC_OFFSET, FORMAT_MAGIC);
         ByteUtil.putInt(pageBytes, FORMAT_VERSION_OFFSET, FORMAT_VERSION);
         setVcOpen(pageBytes);

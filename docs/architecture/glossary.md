@@ -2,7 +2,7 @@
 
 | 术语 | 含义 |
 |---|---|
-| Page | 固定大小的存储页，也是 PageCache 的缓存单位。 |
+| Page | 固定大小的存储页，也是 PageBufferPool 的缓存单位。 |
 | Record | Page 内的 physical record，包含有效性标记、长度和 entry bytes。 |
 | Entry | MVCC 层的版本条目，包含 XMIN、XMAX 与 payload。 |
 | Row | table 层的一行逻辑数据；编码后得到 row bytes。 |

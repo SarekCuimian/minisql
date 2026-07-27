@@ -12,9 +12,9 @@ flowchart TB
     table --> mvcc["engine.transaction.mvcc\nVersionManager"]
     mvcc --> record["engine.storage.record\nPageRecordManager / PageRecord"]
     record --> page["engine.storage.page\nPageCache / DirtyPageTable / DataPage"]
-    record --> wal["engine.storage.wal\nLogManager / LogRecordCodec / ActiveTransaction / Recovery / CheckpointManager"]
+    record --> wal["engine.storage.wal\nWriteAheadLogger / LogRecordCodec / ActiveTransaction / Recovery / CheckpointManager"]
     table --> index["engine.index\nB+Tree / Node"]
-    mvcc --> tx["engine.transaction.status\nTransactionManager"]
+    mvcc --> xid["engine.transaction.xid\nXidAllocator / XidStatusTable"]
 ```
 
 ## 包职责
@@ -34,4 +34,7 @@ flowchart TB
 
 ## 主要组装顺序
 
-`DatabaseManager` 打开一个 database 时依次创建 `TransactionManager`、`PageRecordManager`、`VersionManager` 和 `TableManager`，并放入 `DatabaseContext`。这种 composition root 集中于 `engine.database`，避免普通业务对象自行创建底层依赖。
+`DatabaseManager` 打开一个 database 时依次创建 `XidAllocator`、`XidStatusTable`、
+`ActiveTransactionTable`、`PageRecordManager`、`VersionManager` 和 `TableManager`，
+并放入 `DatabaseContext`。这种 composition root 集中于 `engine.database`，避免普通
+业务对象自行创建底层依赖。

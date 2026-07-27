@@ -13,11 +13,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 import com.minisql.engine.storage.record.PageRecordManager;
+import com.minisql.engine.storage.wal.ActiveTransactionTable;
 import com.minisql.engine.table.TableManager;
-import com.minisql.engine.transaction.status.TransactionManager;
+import com.minisql.engine.transaction.xid.XidAllocator;
+import com.minisql.engine.transaction.xid.XidStatusTable;
 import com.minisql.error.Panic;
 import com.minisql.engine.transaction.mvcc.VersionManager;
-import com.minisql.engine.transaction.mvcc.VersionManagerImpl;
 import com.minisql.error.Error;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,12 +70,24 @@ public class DatabaseManager {
         }
         Files.createDirectories(dir);
         String basePath = databaseBasePath(name);
-        TransactionManager txm = TransactionManager.create(basePath);
-        PageRecordManager pageRecordManager = PageRecordManager.create(basePath, mem, txm);
-        VersionManager vm = VersionManager.create(txm, pageRecordManager);
+        XidAllocator xidAllocator = XidAllocator.create(basePath);
+        XidStatusTable xidStatusTable = new XidStatusTable(xidAllocator);
+        ActiveTransactionTable activeTransactionTable =
+                new ActiveTransactionTable();
+        PageRecordManager pageRecordManager = PageRecordManager.create(
+                basePath,
+                mem,
+                xidStatusTable,
+                activeTransactionTable
+        );
+        VersionManager vm = VersionManager.create(
+                xidAllocator,
+                xidStatusTable,
+                pageRecordManager
+        );
         TableManager.create(basePath, vm, pageRecordManager);
-        txm.close();
         pageRecordManager.close();
+        xidAllocator.close();
     }
 
     /**
@@ -138,7 +151,9 @@ public class DatabaseManager {
             paths.forEach(path -> {
                 if(Files.isDirectory(path)) {
                     String name = path.getFileName().toString();
-                    if(Files.exists(path.resolve(name + ".xid"))) {
+                    if(Files.exists(path.resolve(
+                            name + XidAllocator.FILE_SUFFIX
+                    ))) {
                         names.add(name);
                     }
                 }
@@ -169,11 +184,29 @@ public class DatabaseManager {
         }
         String basePath = databaseBasePath(name);
         try {
-            TransactionManager txm = TransactionManager.open(basePath);
-            PageRecordManager pageRecordManager = PageRecordManager.open(basePath, mem, txm);
-            VersionManager vm = new VersionManagerImpl(txm, pageRecordManager);
+            XidAllocator xidAllocator = XidAllocator.open(basePath);
+            XidStatusTable xidStatusTable =
+                    new XidStatusTable(xidAllocator);
+            ActiveTransactionTable activeTransactionTable =
+                    new ActiveTransactionTable();
+            PageRecordManager pageRecordManager = PageRecordManager.open(
+                    basePath,
+                    mem,
+                    xidStatusTable,
+                    activeTransactionTable
+            );
+            VersionManager vm = new VersionManager(
+                    xidAllocator,
+                    xidStatusTable,
+                    pageRecordManager
+            );
             TableManager tbm = TableManager.open(basePath, vm, pageRecordManager);
-            return new DatabaseContext(name, txm, pageRecordManager, tbm);
+            return new DatabaseContext(
+                    name,
+                    xidAllocator,
+                    pageRecordManager,
+                    tbm
+            );
         } catch (Exception e) {
             LOGGER.error("Failed to open database '{}' at {}: {}", name, basePath, e.getMessage(), e);
             throw e;
