@@ -52,11 +52,7 @@ public final class XidAllocator implements AutoCloseable {
     private long reservedUpperBound;
     private boolean closed;
 
-    private XidAllocator(
-            RandomAccessFile file,
-            FileChannel channel,
-            int reservationSize
-    ) {
+    private XidAllocator(RandomAccessFile file, FileChannel channel, int reservationSize) {
         this.file = file;
         this.channel = channel;
         if (reservationSize <= 0) {
@@ -132,6 +128,20 @@ public final class XidAllocator implements AutoCloseable {
                 reserveNextRange();
             }
             return nextXid++;
+        } finally {
+            allocationLock.unlock();
+        }
+    }
+
+    /**
+     * 返回下一次分配将使用的 XID，但不消耗 XID。
+     * ReadView 使用它划分创建视图之后才开始的事务。
+     */
+    public long peekNextXid() {
+        allocationLock.lock();
+        try {
+            requireOpen();
+            return nextXid;
         } finally {
             allocationLock.unlock();
         }

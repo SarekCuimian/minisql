@@ -18,7 +18,7 @@ import com.minisql.error.Panic;
 import com.minisql.error.Error;
 
 /**
- * Write-ahead logger，负责 WAL 的 append / writer / flusher 三阶段。
+ * 物理 Write-Ahead Log 管理器，负责 WAL 的 append / writer / flusher 三阶段。
  *
  * 文件格式：
  * Header(32B):
@@ -30,7 +30,7 @@ import com.minisql.error.Error;
  *
  * LSN = record 在文件中的结束偏移（byte offset）
  */
-public final class WriteAheadLogger implements AutoCloseable {
+public final class WriteAheadLogManager implements AutoCloseable {
 
     private static final int MAGIC = 0x524C4F47; // "RLOG"
     private static final int VERSION = 5;
@@ -94,11 +94,11 @@ public final class WriteAheadLogger implements AutoCloseable {
     /** log flusher 线程 */
     private Thread flusher;
 
-    public static WriteAheadLogger create(String path) {
+    public static WriteAheadLogManager create(String path) {
         return create(path, DEFAULT_LOG_BUFFER_CAPACITY);
     }
 
-    public static WriteAheadLogger create(String path, int bufferSize) {
+    public static WriteAheadLogManager create(String path, int bufferSize) {
         File f = new File(path + LOG_SUFFIX);
         try {
             if (!f.createNewFile()) {
@@ -120,18 +120,18 @@ public final class WriteAheadLogger implements AutoCloseable {
             Panic.of(e);
         }
 
-        WriteAheadLogger walLogger =
-                new WriteAheadLogger(f, raf, fc, bufferSize);
-        walLogger.initLogFile();
-        walLogger.startWorkerThreads();
-        return walLogger;
+        WriteAheadLogManager writeAheadLogManager =
+                new WriteAheadLogManager(f, raf, fc, bufferSize);
+        writeAheadLogManager.initLogFile();
+        writeAheadLogManager.startWorkerThreads();
+        return writeAheadLogManager;
     }
 
-    public static WriteAheadLogger open(String path) {
+    public static WriteAheadLogManager open(String path) {
         return open(path, DEFAULT_LOG_BUFFER_CAPACITY);
     }
 
-    public static WriteAheadLogger open(String path, int bufferSize) {
+    public static WriteAheadLogManager open(String path, int bufferSize) {
         File f = new File(path + LOG_SUFFIX);
         if (!f.exists()) {
             Panic.of(Error.FileNotExistsException);
@@ -149,20 +149,15 @@ public final class WriteAheadLogger implements AutoCloseable {
             Panic.of(e);
         }
 
-        WriteAheadLogger walLogger =
-                new WriteAheadLogger(f, raf, fc, bufferSize);
-        walLogger.loadHeader();
-        walLogger.trimBadTail();
-        walLogger.startWorkerThreads();
-        return walLogger;
+        WriteAheadLogManager writeAheadLogManager =
+                new WriteAheadLogManager(f, raf, fc, bufferSize);
+        writeAheadLogManager.loadHeader();
+        writeAheadLogManager.trimBadTail();
+        writeAheadLogManager.startWorkerThreads();
+        return writeAheadLogManager;
     }
 
-    private WriteAheadLogger(
-            File logFile,
-            RandomAccessFile raf,
-            FileChannel channel,
-            int bufferSize
-    ) {
+    private WriteAheadLogManager(File logFile, RandomAccessFile raf, FileChannel channel, int bufferSize) {
         this.logFile = logFile;
         this.raf = raf;
         this.channel = channel;

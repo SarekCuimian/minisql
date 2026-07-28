@@ -24,6 +24,7 @@ import com.minisql.engine.storage.codec.ByteUtil;
 import com.minisql.result.StatementResult;
 import com.minisql.result.ResultSet;
 import com.minisql.engine.transaction.mvcc.IsolationLevel;
+import com.minisql.engine.transaction.mvcc.ReadView;
 import com.minisql.engine.transaction.mvcc.VersionManager;
 import com.minisql.error.Error;
 
@@ -46,11 +47,7 @@ public final class TableManager {
         loadTables();
     }
 
-    public static TableManager create(
-            String path,
-            VersionManager versionManager,
-            PageRecordManager pageRecordManager
-    ) {
+    public static TableManager create(String path, VersionManager versionManager, PageRecordManager pageRecordManager) {
         Booter booter = Booter.create(path);
         byte[] firstTableUid = new byte[Long.BYTES];
         ByteUtil.putLong(firstTableUid, 0, 0);
@@ -58,11 +55,7 @@ public final class TableManager {
         return new TableManager(versionManager, pageRecordManager, booter);
     }
 
-    public static TableManager open(
-            String path,
-            VersionManager versionManager,
-            PageRecordManager pageRecordManager
-    ) {
+    public static TableManager open(String path, VersionManager versionManager, PageRecordManager pageRecordManager) {
         return new TableManager(
                 versionManager,
                 pageRecordManager,
@@ -163,6 +156,7 @@ public final class TableManager {
     public StatementResult drop(long xid, Drop drop) throws Exception {
         wLock.lock();
         try {
+            ReadView readView = vm.openReadView(xid);
             // 通过 uid -> Table 映射按链表顺序查找目标表
             Map<Long, Table> uidTableMap = new HashMap<>();
             for (Table tb : tableCache.values()) {
@@ -193,7 +187,11 @@ public final class TableManager {
                 updateFirstTableUid(successorUid);
             } else {
                 // 就地覆盖前驱的 nextUid
-                byte[] tableBytes = vm.read(xid, pre.uid);
+                byte[] tableBytes = vm.read(
+                        xid,
+                        readView,
+                        pre.uid
+                );
                 ByteReader reader = ByteReader.wrap(tableBytes);
                 int tableNameByteLength = reader.readInt();
                 reader.skip(tableNameByteLength);
@@ -229,7 +227,8 @@ public final class TableManager {
             if(table == null) {
                 throw Error.TableNotFoundException;
             }
-            table.insert(xid, insert);
+            ReadView readView = vm.openReadView(xid);
+            table.insert(xid, readView, insert);
             return StatementResult.message("insert", 1);
         } finally {
             rLock.unlock();
@@ -265,7 +264,8 @@ public final class TableManager {
             if(table == null) {
                 throw Error.TableNotFoundException;
             }
-            ResultSet data = table.read(xid, read);
+            ReadView readView = vm.openReadView(xid);
+            ResultSet data = table.read(xid, readView, read);
             return StatementResult.resultSet(data);
         } finally {
             rLock.unlock();
@@ -278,7 +278,8 @@ public final class TableManager {
             if(table == null) {
                 throw Error.TableNotFoundException;
             }
-            int count = table.update(xid, update);
+            ReadView readView = vm.openReadView(xid);
+            int count = table.update(xid, readView, update);
             return StatementResult.message("update", count);
         } finally {
             rLock.unlock();
@@ -291,7 +292,8 @@ public final class TableManager {
             if(table == null) {
                 throw Error.TableNotFoundException;
             }
-            int count = table.delete(xid, delete);
+            ReadView readView = vm.openReadView(xid);
+            int count = table.delete(xid, readView, delete);
             return StatementResult.message("delete", count);
         } finally {
             rLock.unlock();

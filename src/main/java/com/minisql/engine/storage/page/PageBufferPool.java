@@ -20,10 +20,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.minisql.engine.cache.AbstractCache;
-import com.minisql.engine.storage.wal.WriteAheadLogger;
-import com.minisql.engine.storage.wal.CheckpointManager;
-import com.minisql.engine.storage.page.Page;
-import com.minisql.engine.storage.page.CachedPage;
+import com.minisql.engine.storage.wal.WriteAheadLogManager;
 import com.minisql.engine.storage.io.FileChannelUtil;
 import com.minisql.error.Panic;
 import com.minisql.error.Error;
@@ -51,15 +48,13 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
     /** Serializes FileChannel.force() without serializing normal positioned I/O. */
     private final Lock forceLock;
     private final AtomicInteger pageNumberCounter;
+    private final WriteAheadLogManager writeAheadLogManager;
 
     private final DirtyPageTable dirtyPageTable = new DirtyPageTable();
     private final AtomicBoolean cleanerStarted = new AtomicBoolean(false);
+    private final AtomicBoolean closing = new AtomicBoolean(false);
     private volatile boolean cleanerRunning;
     private Thread pageCleaner;
-
-    private volatile boolean closing;
-    private volatile WriteAheadLogger walLogger;
-    private volatile CheckpointManager checkpointManager;
 
     private final ReentrantLock cleanerLock = new ReentrantLock();
     private final Condition hasDirtyPage = cleanerLock.newCondition();
@@ -68,7 +63,8 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
     private PageBufferPool(
             RandomAccessFile file,
             FileChannel fileChannel,
-            int capacity
+            int capacity,
+            WriteAheadLogManager writeAheadLogManager
     ) {
         super(capacity);
         if (capacity < MIN_CACHE_PAGE_COUNT) {
@@ -86,9 +82,13 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
         this.allocationLock = new ReentrantLock();
         this.forceLock = new ReentrantLock();
         this.pageNumberCounter = new AtomicInteger((int) length / PAGE_SIZE);
+        this.writeAheadLogManager = java.util.Objects.requireNonNull(
+                writeAheadLogManager,
+                "writeAheadLogManager must not be null"
+        );
     }
 
-    public static PageBufferPool create(String path, long memory) {
+    public static PageBufferPool create(String path, long memory, WriteAheadLogManager writeAheadLogManager) {
         File file = new File(path + DB_SUFFIX);
         try {
             if (!file.createNewFile()) {
@@ -98,26 +98,27 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
             Panic.of(exception);
         }
         requireReadableAndWritable(file);
-        return openFile(file, memory);
+        return openFile(file, memory, writeAheadLogManager);
     }
 
-    public static PageBufferPool open(String path, long memory) {
+    public static PageBufferPool open(String path, long memory, WriteAheadLogManager writeAheadLogManager) {
         File file = new File(path + DB_SUFFIX);
         if (!file.exists()) {
             Panic.of(Error.FileNotExistsException);
         }
         requireReadableAndWritable(file);
-        return openFile(file, memory);
+        return openFile(file, memory, writeAheadLogManager);
     }
 
-    private static PageBufferPool openFile(File file, long memory) {
+    private static PageBufferPool openFile(File file, long memory, WriteAheadLogManager writeAheadLogManager) {
         try {
             RandomAccessFile randomAccessFile =
                     new RandomAccessFile(file, "rw");
             return new PageBufferPool(
                     randomAccessFile,
                     randomAccessFile.getChannel(),
-                    (int) (memory / PAGE_SIZE)
+                    (int) (memory / PAGE_SIZE),
+                    writeAheadLogManager
             );
         } catch (FileNotFoundException exception) {
             Panic.of(exception);
@@ -134,23 +135,23 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
         }
     }
 
-    // Dependency injection
-    public void setWalLogger(WriteAheadLogger walLogger) {
-        this.walLogger = walLogger;
-        // 启动 PageCleaner 线程
+    // Public API
+    /**
+     * 在数据库恢复与组件组装完成后启动 PageCleaner。
+     */
+    public void start() {
+        if (closing.get()) {
+            throw new IllegalStateException("Page buffer pool is closed");
+        }
         startPageCleaner();
     }
-    public void setCheckpointManager(CheckpointManager checkpointManager) {
-        this.checkpointManager = checkpointManager;
-    }
 
-    // Public API
     /** 新建 page */
     public int newPage(byte[] initData) {
         allocationLock.lock();
         try {
-            if (closing) {
-                throw new IllegalStateException("Page cache is closed");
+            if (closing.get()) {
+                throw new IllegalStateException("Page buffer pool is closed");
             }
             int pgno = pageNumberCounter.get() + 1;
             Page pg = new CachedPage(pgno, initData, this);
@@ -239,8 +240,8 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
         ByteBuffer buf = ByteBuffer.allocate(PAGE_SIZE);
         accessLock.readLock().lock();
         try {
-            if (closing) {
-                throw new IllegalStateException("Page cache is closed");
+            if (closing.get()) {
+                throw new IllegalStateException("Page buffer pool is closed");
             }
             FileChannelUtil.readFully(fc, buf, offset);
         } catch (IOException e) {
@@ -266,7 +267,7 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
             }
         }
     }
-    public Map<Integer, Long> snapshotDirtyPages() {
+    public Map<Integer, Long> snapshotDirtyPageTable() {
         return dirtyPageTable.snapshot();
     }
 
@@ -378,7 +379,6 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
                     compareAndClean(snapshot);
                 }
             }
-            updateCheckpoint();
         }
     }
 
@@ -427,7 +427,7 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
                     return null;
                 }
                 snapshotPageLsn = pg.getPageLsn();
-                long flushedLsn = walLogger.getFlushedLsn();
+                long flushedLsn = writeAheadLogManager.getFlushedLsn();
                 if (snapshotPageLsn > flushedLsn) {
                     needLogFlush = true;
                 } else {
@@ -439,7 +439,7 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
 
             // 锁外阻塞式推进日志刷盘，保证 WAL
             if (needLogFlush) {
-                walLogger.flush(snapshotPageLsn);
+                writeAheadLogManager.flush(snapshotPageLsn);
                 continue;
             }
             // 文件锁内写入文件，暂不 force，后续合并 force
@@ -475,14 +475,6 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
         } finally {
             pg.wUnlock();
             pg.release();
-        }
-    }
-
-    /** 更新 checkpoint */
-    private void updateCheckpoint() {
-        CheckpointManager manager = checkpointManager;
-        if (manager != null) {
-            manager.checkpoint();
         }
     }
 
@@ -533,11 +525,12 @@ public final class PageBufferPool extends AbstractCache<Page> implements AutoClo
         }
     }
     public void close() {
+        if (!closing.compareAndSet(false, true)) {
+            return;
+        }
         allocationLock.lock();
         try {
-            closing = true;
             stopPageCleaner();
-            updateCheckpoint();
             super.close();
             accessLock.writeLock().lock();
             try {

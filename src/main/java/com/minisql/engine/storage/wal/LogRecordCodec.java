@@ -13,7 +13,7 @@ import com.minisql.engine.storage.codec.MalformedDataException;
 /**
  * WAL 逻辑 payload 的唯一编码与解码入口。
  *
- * <p>物理记录头由 {@link WriteAheadLogger} 负责；本类只处理 payload 内部格式。</p>
+ * <p>物理记录头由 {@link WriteAheadLogManager} 负责；本类只处理 payload 内部格式。</p>
  */
 public final class LogRecordCodec {
 
@@ -156,11 +156,7 @@ public final class LogRecordCodec {
      * 编码不带业务 body 的事务状态 payload：
      * {@code [type][xid][prevLsn]}。
      */
-    public static byte[] encodeTransactionState(
-            LogRecordType type,
-            long xid,
-            long prevLsn
-    ) {
+    public static byte[] encodeTransactionState(LogRecordType type, long xid, long prevLsn) {
         Objects.requireNonNull(type, "type must not be null");
         if (!type.isTransactionStateChange()) {
             throw new IllegalArgumentException(
@@ -281,11 +277,7 @@ public final class LogRecordCodec {
         reader.requireFullyConsumed();
     }
 
-    public static byte[] encodeCheckpointDpt(
-            long beginCheckpointLsn,
-            int chunkIndex,
-            Map<Integer, Long> entries
-    ) {
+    public static byte[] encodeCheckpointDpt(long beginCheckpointLsn, int chunkIndex, Map<Integer, Long> entries) {
         requireCheckpointChunk(beginCheckpointLsn, chunkIndex, entries);
         int payloadSize = addExact(
                 CHECKPOINT_CHUNK_HEADER_SIZE,
@@ -388,11 +380,7 @@ public final class LogRecordCodec {
         );
     }
 
-    public static byte[] encodeEndCheckpoint(
-            long beginCheckpointLsn,
-            int dptChunkCount,
-            int attChunkCount
-    ) {
+    public static byte[] encodeEndCheckpoint(long beginCheckpointLsn, int dptChunkCount, int attChunkCount) {
         if (beginCheckpointLsn <= LogRecord.NO_LSN) {
             throw new IllegalArgumentException(
                     "beginCheckpointLsn must be positive: " + beginCheckpointLsn
@@ -481,11 +469,7 @@ public final class LogRecordCodec {
         return value;
     }
 
-    private static void requireEntryBytes(
-            ByteReader reader,
-            int entryCount,
-            int entrySize
-    ) {
+    private static void requireEntryBytes(ByteReader reader, int entryCount, int entrySize) {
         final int expectedBytes;
         try {
             expectedBytes = Math.multiplyExact(entryCount, entrySize);
@@ -520,11 +504,7 @@ public final class LogRecordCodec {
         }
     }
 
-    private static void requireCheckpointChunk(
-            long beginCheckpointLsn,
-            int chunkIndex,
-            Map<?, ?> entries
-    ) {
+    private static void requireCheckpointChunk(long beginCheckpointLsn, int chunkIndex, Map<?, ?> entries) {
         if (beginCheckpointLsn <= LogRecord.NO_LSN) {
             throw new IllegalArgumentException(
                     "beginCheckpointLsn must be positive: " + beginCheckpointLsn
@@ -576,13 +556,7 @@ public final class LogRecordCodec {
         private final short recordOffsetInPage;
         private final byte[] recordBytes;
 
-        private InsertPayload(
-                long xid,
-                long prevLsn,
-                int pageNumber,
-                short recordOffsetInPage,
-                byte[] recordBytes
-        ) {
+        private InsertPayload(long xid, long prevLsn, int pageNumber, short recordOffsetInPage, byte[] recordBytes) {
             this.xid = xid;
             this.prevLsn = prevLsn;
             this.pageNumber = pageNumber;
@@ -738,11 +712,7 @@ public final class LogRecordCodec {
         private final int chunkIndex;
         private final Map<Integer, Long> entries;
 
-        private CheckpointDptPayload(
-                long beginCheckpointLsn,
-                int chunkIndex,
-                Map<Integer, Long> entries
-        ) {
+        private CheckpointDptPayload(long beginCheckpointLsn, int chunkIndex, Map<Integer, Long> entries) {
             this.beginCheckpointLsn = beginCheckpointLsn;
             this.chunkIndex = chunkIndex;
             this.entries = Collections.unmodifiableMap(new LinkedHashMap<>(entries));
@@ -766,11 +736,7 @@ public final class LogRecordCodec {
         private final int chunkIndex;
         private final Map<Long, ActiveTransaction> entries;
 
-        private CheckpointAttPayload(
-                long beginCheckpointLsn,
-                int chunkIndex,
-                Map<Long, ActiveTransaction> entries
-        ) {
+        private CheckpointAttPayload(long beginCheckpointLsn, int chunkIndex, Map<Long, ActiveTransaction> entries) {
             this.beginCheckpointLsn = beginCheckpointLsn;
             this.chunkIndex = chunkIndex;
             this.entries = Collections.unmodifiableMap(new LinkedHashMap<>(entries));
@@ -794,11 +760,7 @@ public final class LogRecordCodec {
         private final int dptChunkCount;
         private final int attChunkCount;
 
-        private EndCheckpointPayload(
-                long beginCheckpointLsn,
-                int dptChunkCount,
-                int attChunkCount
-        ) {
+        private EndCheckpointPayload(long beginCheckpointLsn, int dptChunkCount, int attChunkCount) {
             this.beginCheckpointLsn = beginCheckpointLsn;
             this.dptChunkCount = dptChunkCount;
             this.attChunkCount = attChunkCount;

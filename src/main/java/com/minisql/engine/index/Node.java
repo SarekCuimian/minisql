@@ -275,12 +275,7 @@ public class Node implements AutoCloseable {
      * 从 sourceBytes 的 startIndex 开始复制 count 个 entries，
      * 写入 targetBytes 的第 0 个 entry。
      */
-    private static void copyEntriesFrom(
-            ByteSlice sourceBytes,
-            int startIndex,
-            ByteSlice targetBytes,
-            int count
-    ) {
+    private static void copyEntriesFrom(ByteSlice sourceBytes, int startIndex, ByteSlice targetBytes, int count) {
         System.arraycopy(
                 sourceBytes.bytes(),
                 entryOffset(sourceBytes, startIndex),

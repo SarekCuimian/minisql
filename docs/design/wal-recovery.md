@@ -16,7 +16,7 @@
 | 名称 | 语义 | 持久化位置 |
 |---|---|---|
 | `startLsn` | WAL record 的起始位置，供 reader 定位和解析 | WAL record 的物理位置 |
-| `endLsn` | WAL record 的结束位置，代表完整 record 覆盖边界 | WAL record header 与 WriteAheadLogger 边界 |
+| `endLsn` | WAL record 的结束位置，代表完整 record 覆盖边界 | WAL record header 与 WriteAheadLogManager 边界 |
 | page LSN | 最后修改 Page 的 `endLsn` | Page header |
 | recovery LSN | 首次使 Page 变脏的 `startLsn` | 运行时 DPT，M6 写入 checkpoint record |
 | `flushedLsn` | 已 durable 的 WAL 结束边界 | WAL header |
@@ -129,6 +129,41 @@ Undo 每完成一步就先追加 CLR：
 
 CLR 可以 REDO，但绝不再次 UNDO。若系统在 Undo 中再次崩溃，下一次 Recovery 根据 CLR 的 `undoNextLsn` 跳过已经完成的撤销。
 
+### 4.1 事务终结与严格 2PL
+
+运行期事务使用以下状态：
+
+```text
+ACTIVE → COMMITTING → COMMITTED
+ACTIVE → ABORTING   → ABORTED
+```
+
+`COMMITTING` 与 `ABORTING` 仍属于未完成事务，必须继续留在 active transaction
+table 中，也必须继续持有已经获得的全部记录锁。提交与回滚的顺序为：
+
+```text
+COMMIT
+  ACTIVE → COMMITTING
+  → append COMMIT
+  → flush COMMIT                         // durable commit point
+  → XID = COMMITTED + remove active tx   // 与 RR 快照创建互斥
+  → append END + ATT.remove
+  → releaseAll record locks
+
+ABORT
+  ACTIVE → ABORTING
+  → cancelWait                           // 只取消等待边，不释放已持有锁
+  → append ABORT
+  → Undo + CLR
+  → flush END + XID = ABORTED
+  → remove active tx
+  → releaseAll record locks
+```
+
+记录锁一旦获得，即使目标版本随后不可见、或重新检查后不再满足 `WHERE`，也不能在
+事务执行期间单独释放。这样可以保证其他事务不会观察到提交尚未 durable 的修改，也
+不会在 Undo 尚未完成时修改同一物理记录。
+
 ## 5. Fuzzy checkpoint
 
 Checkpoint 不停止 transaction，也不要求强制写出所有 dirty page。它持久化恢复所需的 ATT 与 DPT snapshot：
@@ -220,7 +255,7 @@ M1–M6 已完成实现与验收。M7 Page 生命周期与 M8 WAL retention 按�
 - 新增公共 `PageHeader`，在 Page 起始位置保存 8-byte page LSN。
 - DataPage 的 FSO 由 offset 0 后移至 offset 8，record area 起点相应后移。
 - `CachedPage` 从 Page bytes 读写 page LSN，移除独立易失副本。
-- `WriteAheadLogger.Reader` 向 Recovery 暴露当前 record 的 `endLsn`。
+- `WriteAheadLogManager.Reader` 向 Recovery 暴露当前 record 的 `endLsn`。
 - REDO 根据 page LSN 与 record `endLsn` 判断是否跳过。
 - 增加 database page-format version；直接切换新格式，旧开发数据库删除后重建，打开旧文件必须 fail fast。
 
@@ -239,7 +274,8 @@ M1–M6 已完成实现与验收。M7 Page 生命周期与 M8 WAL retention 按�
 
 ```text
 engine.storage.wal
-├── WriteAheadLogger
+├── WriteAheadLogManager
+├── TransactionLogManager
 ├── LogRecord
 ├── LogRecordType
 ├── LogRecordCodec
@@ -255,7 +291,7 @@ LogRecord next();
 ```
 
 `LogRecord` 是完整物理记录，直接包含 `startLsn`、`endLsn` 与 `payload`。调用者向
-`append` 提交尚未分配位置的 payload；`WriteAheadLogger` 分配连续区间、完成 framing
+`append` 提交尚未分配位置的 payload；`WriteAheadLogManager` 分配连续区间、完成 framing
 并返回已定位的 `LogRecord`。不再增加 `LogEntry`、`LocatedLogRecord` 或读取结果
 包装类。
 
@@ -281,6 +317,8 @@ LogRecord next();
 
 ### 代码范围
 
+- 新增 `TransactionLogManager`，集中维护事务 WAL 链、ATT 与事务状态日志；
+  `WriteAheadLogManager` 只负责物理 WAL、LSN 和 durability。
 - 增加 `BEGIN`、`COMMIT`、`ABORT`、`END`。
 - transaction record 公共头采用 `[type][XID][prevLsn]`。
 - 新增顶层值对象 `ActiveTransaction`，保存 `XID`、status 与 `lastLsn`；
@@ -296,13 +334,14 @@ allocate XID → append BEGIN → ATT.add → flush BEGIN.endLsn
 
 COMMIT:
 append COMMIT → flush COMMIT.endLsn
-→ persist committed status → append END → ATT.remove → response
+→ persist committed status → append END + ATT.remove（同一日志链临界区）→ response
 
 ABORT:
 append ABORT → ATT.status = ABORTING → start Undo
 
 END:
-transaction cleanup complete → append END → ATT.remove
+transaction cleanup complete → TransactionLogManager.complete(xid)
+→ append END + ATT.remove
 ```
 
 ### 验收门禁

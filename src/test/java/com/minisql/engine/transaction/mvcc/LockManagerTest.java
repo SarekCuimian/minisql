@@ -86,7 +86,7 @@ public class LockManagerTest {
         });
 
         // 移除其中一个事务，打断环
-        lt.clear(23);
+        lt.releaseAll(23);
 
         // 再次申请同样的锁应该不再触发死锁
         try {
@@ -141,8 +141,8 @@ public class LockManagerTest {
 
         // 刻意等一会儿再释放，保证 T2 至少阻塞一小段时间
         Thread.sleep(3000);  // 自己调，比如 500ms 或 1s
-        System.out.println("[主线程] 调用 lt.remove(1)，释放 U1（延迟后）");
-        lt.clear(1L);
+        System.out.println("[主线程] 调用 releaseAll(1)，释放 U1（延迟后）");
+        lt.releaseAll(1L);
 
         boolean woken = doneLatch.await(2, TimeUnit.SECONDS);
         System.out.println("[主线程] T2 唤醒状态 = " + woken);
@@ -152,5 +152,34 @@ public class LockManagerTest {
         System.out.println("=== 测试结束 ===");
     }
 
+    @Test
+    void cancelWaitKeepsAlreadyHeldLocksUntilReleaseAll() throws Exception {
+        LockManager lockManager = new LockManager();
+
+        assertNull(lockManager.acquire(1L, 10L));
+        assertNull(lockManager.acquire(2L, 20L));
+
+        CountDownLatch transactionTwoWait =
+                lockManager.acquire(2L, 10L);
+        assertNotNull(transactionTwoWait);
+
+        lockManager.cancelWait(2L);
+        assertEquals(0L, transactionTwoWait.getCount());
+
+        // cancelWait 只打破等待边；事务 2 已经持有的记录 20 仍不能被事务 3 获得。
+        CountDownLatch transactionThreeWait =
+                lockManager.acquire(3L, 20L);
+        assertNotNull(transactionThreeWait);
+        assertEquals(1L, transactionThreeWait.getCount());
+
+        lockManager.releaseAll(2L);
+        assertTrue(
+                transactionThreeWait.await(1, TimeUnit.SECONDS),
+                "Undo 完成并 releaseAll 后，等待者应获得记录锁"
+        );
+
+        lockManager.releaseAll(1L);
+        lockManager.releaseAll(3L);
+    }
 
 }

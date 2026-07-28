@@ -6,7 +6,7 @@
 
 | 场景 | 刺激 | 预期结果 | 验证方式 |
 |---|---|---|---|
-| WAL 先行 | WAL 已追加但尚未 durable 时触发数据页 flush | 数据页不得先于对应 WAL 持久化 | 在 PageBufferPool / WriteAheadLogger test 中记录调用顺序 |
+| WAL 先行 | WAL 已追加但尚未 durable 时触发数据页 flush | 数据页不得先于对应 WAL 持久化 | 在 PageBufferPool / WriteAheadLogManager test 中记录调用顺序 |
 | 已落盘页的 REDO | 重启时日志 `endLsn <= page LSN` | Recovery 跳过该日志，页内容不变 | `persist-page-lsn` recovery test |
 | 未落盘页的 REDO | 重启时日志 `endLsn > page LSN` | Recovery 重放 image 并推进 page LSN | `persist-page-lsn` recovery test |
 | 活跃事务崩溃 | transaction 未 commit 即进程终止 | Recovery 逆序 UNDO，并将 XID 设为 aborted | transaction + recovery integration test |

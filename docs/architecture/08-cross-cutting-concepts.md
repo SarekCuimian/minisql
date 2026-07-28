@@ -1,11 +1,16 @@
 # 8. 横切概念
 
-## Transaction 与 MVCC
+## 事务运行态与 MVCC
 
 - `XidAllocator` 管理 `.xid` 文件、格式迁移和区间预留，并分配永不复用的正数 XID。
 - `XidStatusTable` 维护 `UNUSED / IN_PROGRESS / COMMITTED / ABORTED` 状态。
 - `ActiveTransactionTable` 属于 WAL，维护 transaction phase 与 `lastLsn`。
-- `VersionManager` 负责 visibility、transaction begin / commit / abort 与 lock coordination。
+- `RuntimeTransaction` 只表示当前进程中的一次事务，保存隔离级别、运行状态和 RR
+  使用的事务级 `ReadView`；`VersionManager.runtimeTransactionMap` 管理这些对象。
+- `ReadView` 保存 owner、未来 XID 边界和创建视图时的活跃 XID，是版本可见性的
+  不可变输入；RC 每条语句创建，RR 整个事务复用。
+- `VersionManager` 负责 ReadView 创建、visibility、transaction begin / commit /
+  abort 与 lock coordination。
 - Entry 的 MVCC header 包含 `XMIN`、`XMAX`；其 payload 是 table 层编码的 row bytes。
 - 独立的 `SELECT` / `SHOW` / `DESCRIBE` 使用负数进程内 read-only XID；它只参与
   READ COMMITTED 可见性判断，不写 XID 文件、Entry、ATT 或 WAL。
@@ -25,6 +30,13 @@ rowBytes
 
 - `AbstractCache` 负责按 key 的对象 cache、reference count、in-flight load coordination 与 eviction。
 - `PageBufferPool` 管理 Page load、allocation、dirty-page tracker 与 background cleaner。
+- `WriteAheadLogManager` 是 `PageBufferPool` 的 final 构造依赖；PageCleaner 在
+  Recovery 和 database 组件组装完成后才启动。
+- `CheckpointManager` 独立运行周期 checkpoint，不由 PageCleaner 回调，也不被
+  `PageBufferPool` 持有。
+- `DatabaseContext` 是 database 级 composition root；共享的
+  `TransactionLogManager` 通过构造器同时注入 PageRecordManager 和
+  VersionManager，不通过下层 Getter 查找依赖。
 - Page 使用 read/write latch：读可并行；同页 physical write 串行，避免 FSO 与字节区域并发修改损坏。
 - File I/O 的 access、allocation 与 `force` 有独立协调，避免普通 positioned read/write 被全局 force 串行化。
 

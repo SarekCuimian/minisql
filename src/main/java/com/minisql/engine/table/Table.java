@@ -31,6 +31,7 @@ import com.minisql.engine.sql.ast.operator.LogicOperator;
 import com.minisql.engine.transaction.xid.XidAllocator;
 import com.minisql.error.Panic;
 import com.minisql.engine.transaction.mvcc.VersionManager;
+import com.minisql.engine.transaction.mvcc.ReadView;
 import com.minisql.result.ResultSet;
 import com.minisql.error.Error;
 
@@ -84,7 +85,7 @@ public class Table {
         byte[] tableBytes = null;
         try {
             // 使用超级事务 SUPER_XID 去加载数据表
-            tableBytes = tbm.getVersionManager().read(XidAllocator.SYSTEM_XID, uid);
+            tableBytes = tbm.getVersionManager().readSystem(uid);
         } catch (Exception e) {
             Panic.of(e);
         }
@@ -233,9 +234,9 @@ public class Table {
      * @param insert 解析后的 INSERT 语句
      * @throws Exception 值个数不匹配、唯一约束冲突、VM 异常
      */
-    public void insert(long xid, Insert insert) throws Exception {
+    public void insert(long xid, ReadView readView, Insert insert) throws Exception {
         Map<String, Object> valueMap = getValueMap(insert.columns, insert.values);
-        validateUniqueConstraints(xid, valueMap, null);
+        validateUniqueConstraints(xid, readView, valueMap, null);
         byte[] rowBytes = encodeRow(valueMap);
         long uid = vm.insert(xid, rowBytes);
         for (Field field : fields) {
@@ -253,7 +254,7 @@ public class Table {
      * @return 结构化结果集
      * @throws Exception 字段不存在、索引异常或 VM 异常
      */
-    public ResultSet read(long xid, Select select) throws Exception {
+    public ResultSet read(long xid, ReadView readView, Select select) throws Exception {
         boolean hasAggregate = select.aggregates != null && select.aggregates.length > 0;
         boolean hasGroup = select.groupBy != null && select.groupBy.length > 0;
         // 有分组，先验证分组列是否合法
@@ -264,23 +265,23 @@ public class Table {
             throw Error.InvalidCommandException;
         }
         // 应用 WHERE 条件 确定 UID 范围
-        List<Long> uids = applyWhere(xid, select.where);
+        List<Long> uids = applyWhere(xid, readView, select.where);
         // 有聚合函数
         if (hasAggregate) {
             // 有聚合函数且有分组
             if (hasGroup) {
-                return aggregateByGroup(xid, select, uids);
+                return aggregateByGroup(xid, readView, select, uids);
             }
             // 有聚合函数，无分组
             // 用带别名/投影顺序的封装
-            return aggregate(xid, select, uids);
+            return aggregate(xid, readView, select, uids);
         } else {
             if (hasGroup) {
                 // 无聚合但有分组，做去重
-                return distinctByGroup(xid, select, uids);
+                return distinctByGroup(xid, readView, select, uids);
             } else {
                 // 无聚合函数，普通查询
-                return toResultSet(xid, select, uids);
+                return toResultSet(xid, readView, select, uids);
             }
         }
     }
@@ -297,9 +298,9 @@ public class Table {
      * @return 受影响的行数
      * @throws Exception 字段不存在、未建索引、唯一约束冲突或 VM 异常
      */
-    public int update(long xid, Update update) throws Exception {
+    public int update(long xid, ReadView readView, Update update) throws Exception {
         // 1. 根据 where 条件找出候选记录版本 uid（可能不是最新版本）
-        List<Long> uids = applyWhere(xid, update.where);
+        List<Long> uids = applyWhere(xid, readView, update.where);
 
         // 2. 找到要更新的字段 fd，以及主键字段 pkField
         Field fd = null;
@@ -327,7 +328,7 @@ public class Table {
         // 主键不可更新，因此同一逻辑行的不同版本主键值一致。
         Map<Long, Object> uidPrimaryKeyMap = new HashMap<>();
         for (Long uid : uids) {
-            byte[] recordBytes = vm.read(xid, uid);
+            byte[] recordBytes = vm.read(xid, readView, uid);
             if (recordBytes == null)
                 continue;
             Map<String, Object> row = decodeRow(recordBytes);
@@ -350,12 +351,18 @@ public class Table {
                 // readForUpdate：读取并加锁
                 // 成功：返回该版本的 Record bytes。
                 // 失败(recordBytes==null)：该 uid 在当前事务 xid 视角不可见（可能被删除、被新版本覆盖或不可见）。
-                byte[] recordBytes = vm.readForUpdate(xid, curUid);
+                byte[] recordBytes =
+                        vm.readForUpdate(xid, readView, curUid);
 
                 // 5.1 如果当前 uid 已不可见：尝试用主键值重定位最新版本并重试
                 if (recordBytes == null) {
                     if (primaryKeyVal != null) {
-                        Long latestUid = getLatestUidByPrimaryKey(xid, pkField, primaryKeyVal);
+                        Long latestUid = getLatestUidByPrimaryKey(
+                                xid,
+                                readView,
+                                pkField,
+                                primaryKeyVal
+                        );
                         if (latestUid != null && !latestUid.equals(curUid)) {
                             curUid = latestUid;
                             continue;
@@ -367,19 +374,24 @@ public class Table {
                 Map<String, Object> row = decodeRow(recordBytes);
                 // 并发下版本切换后，可能已不满足 WHERE，保持语义，仅更新执行时满足 WHERE 的行
                 if (update.where != null && !matchWhere(row, update.where)) {
-                    vm.getLockManager().release(xid, curUid);
+                    // 严格 2PL：已经获得的记录锁保留到事务提交或回滚完成。
                     break;
                 }
 
                 // 5.3) readForUpdate 能返回 Record bytes，表示：
-                // - 当前 xid 已获得该 uid 的行锁（必要时等待）
+                // - 当前 xid 已获得该 uid 的记录锁（必要时等待）
                 // - 且该版本对当前事务可见
                 // 后续直接基于此版本做“删旧插新”，避免额外的二次校准逻辑。
                 row.put(fd.fieldName, value);
                 // 校验所有 unique 字段不与其他记录冲突，更新场景传入 selfUid 用于跳过被更新的数据自身值
-                validateUniqueConstraints(xid, row, curUid);
+                validateUniqueConstraints(
+                        xid,
+                        readView,
+                        row,
+                        curUid
+                );
                 // 删除旧版本
-                vm.delete(xid, curUid);
+                vm.delete(xid, readView, curUid);
                 // 序列化新版本并插入，得到新 uid
                 byte[] rowBytes = encodeRow(row);
                 long uuid = vm.insert(xid, rowBytes);
@@ -404,11 +416,11 @@ public class Table {
      * @return 实际删除的行数
      * @throws Exception VM 读写异常、字段/索引异常
      */
-    public int delete(long xid, Delete delete) throws Exception {
-        List<Long> uids = applyWhere(xid, delete.where);
+    public int delete(long xid, ReadView readView, Delete delete) throws Exception {
+        List<Long> uids = applyWhere(xid, readView, delete.where);
         int count = 0;
         for (Long uid : uids) {
-            if (vm.delete(xid, uid)) {
+            if (vm.delete(xid, readView, uid)) {
                 count++;
             }
         }
@@ -426,10 +438,20 @@ public class Table {
      * @param selfUid  本记录原 UID；插入场景传 {@code null}，更新场景用于跳过自身
      * @throws Exception 唯一约束冲突或索引异常
      */
-    private void validateUniqueConstraints(long xid, Map<String, Object> valueMap, Long selfUid) throws Exception {
+    private void validateUniqueConstraints(
+            long xid,
+            ReadView readView,
+            Map<String, Object> valueMap,
+            Long selfUid
+    ) throws Exception {
         for (Field field : fields) {
             if (field.isUnique()) {
-                field.ensureUnique(xid, valueMap.get(field.fieldName), selfUid);
+                field.ensureUnique(
+                        xid,
+                        readView,
+                        valueMap.get(field.fieldName),
+                        selfUid
+                );
             }
         }
     }
@@ -437,14 +459,14 @@ public class Table {
     /**
      * 根据主键值查找当前事务可见的最新 uid。
      */
-    private Long getLatestUidByPrimaryKey(long xid, Field pkField, Object pkValue) throws Exception {
+    private Long getLatestUidByPrimaryKey(long xid, ReadView readView, Field pkField, Object pkValue) throws Exception {
         long key = pkField.toKey(pkValue);
         List<Long> uids = pkField.searchRange(key, key);
         if (uids == null)
             return null;
         Long visibleUid = null;
         for (Long uid : uids) {
-            byte[] recordBytes = vm.read(xid, uid);
+            byte[] recordBytes = vm.read(xid, readView, uid);
             if (recordBytes == null)
                 continue;
             if (visibleUid != null) {
@@ -543,10 +565,10 @@ public class Table {
     /**
      * 无分组的全表聚合（SELECT 只有聚合函数）。
      */
-    private ResultSet aggregate(long xid, Select select, List<Long> uids) throws Exception {
+    private ResultSet aggregate(long xid, ReadView readView, Select select, List<Long> uids) throws Exception {
         AggregateContext aggCtx = AggregateContext.of(fields, select.aggregates);
         for (Long uid : uids) {
-            byte[] recordBytes = vm.read(xid, uid);
+            byte[] recordBytes = vm.read(xid, readView, uid);
             if (recordBytes == null)
                 continue;
             // 聚合器容器统一接收row
@@ -579,13 +601,13 @@ public class Table {
     /**
      * GROUP BY 的分组键
      */
-    private ResultSet aggregateByGroup(long xid, Select select, List<Long> uids) throws Exception {
+    private ResultSet aggregateByGroup(long xid, ReadView readView, Select select, List<Long> uids) throws Exception {
         // 分组聚合结果
         Map<GroupingKey, AggregateContext> grouped = new HashMap<>();
         List<Field> groupingFields = getGroupingFields(select.groupBy);
         // 分组键
         for (Long uid : uids) {
-            byte[] recordBytes = vm.read(xid, uid);
+            byte[] recordBytes = vm.read(xid, readView, uid);
             if (recordBytes == null)
                 continue;
             // 解码为 {字段名 → 值} 的映射
@@ -657,12 +679,12 @@ public class Table {
     /**
      * 无聚合，仅 GROUP BY 去重
      */
-    private ResultSet distinctByGroup(long xid, Select select, List<Long> uids) throws Exception {
+    private ResultSet distinctByGroup(long xid, ReadView readView, Select select, List<Long> uids) throws Exception {
         List<Field> groupingFields = getGroupingFields(select.groupBy);
         // 按出现顺序保留分组
         Set<GroupingKey> grouped = new LinkedHashSet<>();
         for (Long uid : uids) {
-            byte[] recordBytes = vm.read(xid, uid);
+            byte[] recordBytes = vm.read(xid, readView, uid);
             if (recordBytes == null)
                 continue;
             Map<String, Object> valueMap = decodeRow(recordBytes);
@@ -851,17 +873,17 @@ public class Table {
      * - 同字段多表达式的 calWhere 优化
      * - 出现 "!=" 统一退回全表扫描保证正确性
      */
-    private List<Long> applyWhere(long xid, Where where) throws Exception {
+    private List<Long> applyWhere(long xid, ReadView readView, Where where) throws Exception {
         // 1. 没有 WHERE：全表扫描
         if (where == null) {
-            return getUidsByWhere(xid, null);
+            return getUidsByWhere(xid, readView, null);
         }
 
         // 2. 出现 "!="：退回全表扫描 + matchWhere
         boolean hasNotEqual = (where.singleExp1 != null && where.singleExp1.op == CompareOperator.NE)
                 || (where.singleExp2 != null && where.singleExp2.op == CompareOperator.NE);
         if (hasNotEqual) {
-            return getUidsByWhere(xid, where);
+            return getUidsByWhere(xid, readView, where);
         }
 
         // 3. 只有一个表达式：单字段优化
@@ -879,10 +901,15 @@ public class Table {
                 Set<Long> uidSet = new LinkedHashSet<>();
                 if (uids != null)
                     uidSet.addAll(uids);
-                return filterUidsByWhere(xid, uidSet, where);
+                return filterUidsByWhere(
+                        xid,
+                        readView,
+                        uidSet,
+                        where
+                );
             }
 
-            return getUidsByWhere(xid, where);
+            return getUidsByWhere(xid, readView, where);
         }
 
         // 4. 有两个表达式
@@ -906,7 +933,12 @@ public class Table {
                 if (uids != null)
                     uidSet.addAll(uids);
             }
-            return filterUidsByWhere(xid, uidSet, where);
+            return filterUidsByWhere(
+                    xid,
+                    readView,
+                    uidSet,
+                    where
+            );
         }
 
         // 4.2 不同字段 a, b 的情况
@@ -916,24 +948,54 @@ public class Table {
         // AND 逻辑
         if (logicOperator == LogicOperator.AND) {
             if (!aIndexed && !bIndexed) {
-                return getUidsByWhere(xid, where);
+                return getUidsByWhere(xid, readView, where);
             }
             // a, b 都有索引
             if (aIndexed && bIndexed) {
-                Set<Long> setA = getUidsByIndexAndExp(xid, f1, exp1);
-                Set<Long> setB = getUidsByIndexAndExp(xid, f2, exp2);
+                Set<Long> setA = getUidsByIndexAndExp(
+                        xid,
+                        readView,
+                        f1,
+                        exp1
+                );
+                Set<Long> setB = getUidsByIndexAndExp(
+                        xid,
+                        readView,
+                        f2,
+                        exp2
+                );
                 setA.retainAll(setB); // A与B取交集
                 return new ArrayList<>(setA);
             }
             // a 索引，b 无索引
             if (aIndexed) {
-                Set<Long> setA = getUidsByIndexAndExp(xid, f1, exp1);
-                return filterUidsByWhere(xid, setA, where);
+                Set<Long> setA = getUidsByIndexAndExp(
+                        xid,
+                        readView,
+                        f1,
+                        exp1
+                );
+                return filterUidsByWhere(
+                        xid,
+                        readView,
+                        setA,
+                        where
+                );
             }
             // b 索引，a 无索引
             else {
-                Set<Long> setB = getUidsByIndexAndExp(xid, f2, exp2);
-                return filterUidsByWhere(xid, setB, where);
+                Set<Long> setB = getUidsByIndexAndExp(
+                        xid,
+                        readView,
+                        f2,
+                        exp2
+                );
+                return filterUidsByWhere(
+                        xid,
+                        readView,
+                        setB,
+                        where
+                );
             }
         }
 
@@ -941,12 +1003,22 @@ public class Table {
         if (logicOperator == LogicOperator.OR) {
             // 只要有一侧无索引，直接全表扫描 OR 条件，避免重复读
             if (!aIndexed || !bIndexed) {
-                return getUidsByWhere(xid, where);
+                return getUidsByWhere(xid, readView, where);
             }
             // 两侧都有索引：各自走索引结果取并集
             Set<Long> result = new LinkedHashSet<>();
-            result.addAll(getUidsByIndexAndExp(xid, f1, exp1));
-            result.addAll(getUidsByIndexAndExp(xid, f2, exp2));
+            result.addAll(getUidsByIndexAndExp(
+                    xid,
+                    readView,
+                    f1,
+                    exp1
+            ));
+            result.addAll(getUidsByIndexAndExp(
+                    xid,
+                    readView,
+                    f2,
+                    exp2
+            ));
             return new ArrayList<>(result);
         }
 
@@ -957,7 +1029,7 @@ public class Table {
      * 全表扫描：通过某个索引字段扫描所有 UID，再在内存中用 where 条件过滤。
      * 如果 where == null，则等价于“返回整张表所有 UID”。
      */
-    private List<Long> getUidsByWhere(long xid, Where where) throws Exception {
+    private List<Long> getUidsByWhere(long xid, ReadView readView, Where where) throws Exception {
         List<Long> all = getAllUids();
 
         if (where == null)
@@ -965,7 +1037,7 @@ public class Table {
 
         List<Long> matched = new ArrayList<>();
         for (Long uid : all) {
-            byte[] recordBytes = vm.read(xid, uid);
+            byte[] recordBytes = vm.read(xid, readView, uid);
             if (recordBytes == null)
                 continue;
             Map<String, Object> row = decodeRow(recordBytes);
@@ -1087,7 +1159,12 @@ public class Table {
     /**
      * 使用指定字段的索引，根据单个表达式做范围搜索，并按事务可见性和条件匹配过滤。
      */
-    private Set<Long> getUidsByIndexAndExp(long xid, Field f, SingleExpression exp) throws Exception {
+    private Set<Long> getUidsByIndexAndExp(
+            long xid,
+            ReadView readView,
+            Field f,
+            SingleExpression exp
+    ) throws Exception {
         Set<Long> res = new LinkedHashSet<>();
         Range r = f.computeExpression(exp);
         List<Long> uids = f.searchRange(r.getLeft(), r.getRight());
@@ -1095,7 +1172,7 @@ public class Table {
             return res;
 
         for (Long uid : uids) {
-            byte[] recordBytes = vm.read(xid, uid);
+            byte[] recordBytes = vm.read(xid, readView, uid);
             if (recordBytes == null)
                 continue;
             Map<String, Object> row = decodeRow(recordBytes);
@@ -1109,10 +1186,10 @@ public class Table {
     /**
      * 对一批 UID 做 vm.read + matchWhere 过滤，统一处理事务可见性和复杂逻辑。
      */
-    private List<Long> filterUidsByWhere(long xid, Set<Long> uidSet, Where where) throws Exception {
+    private List<Long> filterUidsByWhere(long xid, ReadView readView, Set<Long> uidSet, Where where) throws Exception {
         List<Long> res = new ArrayList<>();
         for (Long uid : uidSet) {
-            byte[] recordBytes = vm.read(xid, uid);
+            byte[] recordBytes = vm.read(xid, readView, uid);
             if (recordBytes == null)
                 continue;
             Map<String, Object> row = decodeRow(recordBytes);
@@ -1131,10 +1208,10 @@ public class Table {
      * To ResultSet
      * 将查询结果转为结构化数据（无聚合、无分组）。
      */
-    private ResultSet toResultSet(long xid, Select select, List<Long> uids) throws Exception {
+    private ResultSet toResultSet(long xid, ReadView readView, Select select, List<Long> uids) throws Exception {
         List<Map<String, Object>> valueMapList = new ArrayList<>();
         for (Long uid : uids) {
-            byte[] recordBytes = vm.read(xid, uid);
+            byte[] recordBytes = vm.read(xid, readView, uid);
             if (recordBytes == null)
                 continue;
             valueMapList.add(decodeRow(recordBytes));

@@ -12,13 +12,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
-import com.minisql.engine.storage.record.PageRecordManager;
-import com.minisql.engine.storage.wal.ActiveTransactionTable;
-import com.minisql.engine.table.TableManager;
 import com.minisql.engine.transaction.xid.XidAllocator;
-import com.minisql.engine.transaction.xid.XidStatusTable;
 import com.minisql.error.Panic;
-import com.minisql.engine.transaction.mvcc.VersionManager;
 import com.minisql.error.Error;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,24 +65,13 @@ public class DatabaseManager {
         }
         Files.createDirectories(dir);
         String basePath = databaseBasePath(name);
-        XidAllocator xidAllocator = XidAllocator.create(basePath);
-        XidStatusTable xidStatusTable = new XidStatusTable(xidAllocator);
-        ActiveTransactionTable activeTransactionTable =
-                new ActiveTransactionTable();
-        PageRecordManager pageRecordManager = PageRecordManager.create(
+        try (DatabaseContext ignored = DatabaseContext.create(
+                name,
                 basePath,
-                mem,
-                xidStatusTable,
-                activeTransactionTable
-        );
-        VersionManager vm = VersionManager.create(
-                xidAllocator,
-                xidStatusTable,
-                pageRecordManager
-        );
-        TableManager.create(basePath, vm, pageRecordManager);
-        pageRecordManager.close();
-        xidAllocator.close();
+                mem
+        )) {
+            // 创建阶段只初始化数据库文件，不保留运行实例。
+        }
     }
 
     /**
@@ -113,7 +97,7 @@ public class DatabaseManager {
     /**
      * 获取数据库上下文，如尚未打开则自动打开。
      */
-    public DatabaseContext acquire(String name) throws Exception {
+    public synchronized DatabaseContext acquire(String name) throws Exception {
         validateDbName(name);
         DatabaseContext ctx;
         try {
@@ -132,7 +116,7 @@ public class DatabaseManager {
     /**
      * 释放引用。
      */
-    public void release(DatabaseContext ctx) {
+    public synchronized void release(DatabaseContext ctx) {
         if(ctx == null) {
             return;
         }
@@ -168,7 +152,7 @@ public class DatabaseManager {
     /**
      * 关闭所有已打开的数据库上下文。
      */
-    public void shutdown() {
+    public synchronized void shutdown() {
         contexts.values().forEach(DatabaseContext::close);
         contexts.clear();
     }
@@ -184,28 +168,10 @@ public class DatabaseManager {
         }
         String basePath = databaseBasePath(name);
         try {
-            XidAllocator xidAllocator = XidAllocator.open(basePath);
-            XidStatusTable xidStatusTable =
-                    new XidStatusTable(xidAllocator);
-            ActiveTransactionTable activeTransactionTable =
-                    new ActiveTransactionTable();
-            PageRecordManager pageRecordManager = PageRecordManager.open(
-                    basePath,
-                    mem,
-                    xidStatusTable,
-                    activeTransactionTable
-            );
-            VersionManager vm = new VersionManager(
-                    xidAllocator,
-                    xidStatusTable,
-                    pageRecordManager
-            );
-            TableManager tbm = TableManager.open(basePath, vm, pageRecordManager);
-            return new DatabaseContext(
+            return DatabaseContext.open(
                     name,
-                    xidAllocator,
-                    pageRecordManager,
-                    tbm
+                    basePath,
+                    mem
             );
         } catch (Exception e) {
             LOGGER.error("Failed to open database '{}' at {}: {}", name, basePath, e.getMessage(), e);

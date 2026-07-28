@@ -60,75 +60,54 @@ public class LockManager {
     }
 
     /**
-     * 释放指定资源的锁，不结束事务，用于更新过程中切换到最新版本。
+     * 取消事务当前的等待边，但保留它已经持有的所有记录锁。
+     *
+     * <p>死锁、锁等待超时或外部终止事务时先调用此方法打破等待关系；
+     * 已持有锁必须继续覆盖整个 Undo，不能在回滚完成前释放。</p>
      */
-    public void release(long xid, long uid) {
+    public void cancelWait(long xid) {
         graphLock.lock();
         try {
             TNode tNode = transactions.get(xid);
-            UNode uNode = resources.get(uid);
-            if (tNode == null || uNode == null) return;
+            if (tNode == null) return;
 
-            // 如果正在持有该资源，释放并唤醒下一个等待者
-            if (tNode.isHolding(uNode)) {
-                tNode.removeHolding(uNode);
-                uNode.clearHolder();
-                assignNextHolder(uNode);
-            } else if (tNode.isWaiting() && tNode.getWaiting() == uNode) {
-                // 如果正等待这个资源，清理等待边并唤醒自己
-                uNode.removeWaiter(tNode);
+            if (tNode.isWaiting()) {
+                UNode waitingFor = tNode.getWaiting();
+                waitingFor.removeWaiter(tNode);
                 CountDownLatch latch = tNode.getLatch();
                 if (latch != null) {
                     latch.countDown();
                 }
                 tNode.clearWaiting();
                 tNode.setLatch(null);
+                removeUnusedResource(waitingFor);
             }
-
-            if (!uNode.hasWaiters() && !uNode.isHeld()) {
-                resources.remove(uid);
-            }
-
         } finally {
             graphLock.unlock();
         }
     }
 
     /**
-     * 事务结束时释放它持有的所有资源，并唤醒等待者
-     * 注意：按你的要求，这里不对“仍在等待”的事务做 countDown 解除阻塞
+     * 事务结果确定后释放全部记录锁，并唤醒等待者。
+     *
+     * <p>COMMIT 路径只能在 COMMIT WAL durable 且运行期状态已切换为
+     * COMMITTED 后调用；ABORT 路径只能在 Undo 完成后调用。</p>
      */
-    public void clear(long xid) {
+    public void releaseAll(long xid) {
         graphLock.lock();
         try {
             TNode tNode = transactions.get(xid);
             if (tNode == null) return;
 
-            // 1. 释放所有持有的资源
+            cancelWaiting(tNode);
+
             for (UNode uNode : tNode.getHoldingSnapshot()) {
+                tNode.removeHolding(uNode);
                 uNode.clearHolder();
                 assignNextHolder(uNode);
+                removeUnusedResource(uNode);
             }
-
-            // 2. 如果它本身还在某个资源的等待队列里，清理掉等待边并唤醒线程
-            if (tNode.isWaiting()) {
-                UNode waitingFor = tNode.getWaiting();
-                if (waitingFor != null) {
-                    waitingFor.removeWaiter(tNode);
-                }
-
-                // 唤醒可能阻塞在 await 上的线程
-                CountDownLatch latch = tNode.getLatch();
-                if (latch != null) {
-                    latch.countDown();
-                }
-                tNode.clearWaiting();
-                tNode.setLatch(null); // 清理引用，避免后续复用
-            }
-
-            // 3. 从事务表中删除
             transactions.remove(xid);
-
         } finally {
             graphLock.unlock();
         }
@@ -147,6 +126,28 @@ public class LockManager {
         tNode.clearWaiting();
         tNode.setLatch(null); // 死锁回滚时清掉本次等待 latch
         uNode.removeWaiter(tNode);
+        removeUnusedResource(uNode);
+    }
+
+    private void cancelWaiting(TNode tNode) {
+        if (!tNode.isWaiting()) {
+            return;
+        }
+        UNode waitingFor = tNode.getWaiting();
+        waitingFor.removeWaiter(tNode);
+        CountDownLatch latch = tNode.getLatch();
+        if (latch != null) {
+            latch.countDown();
+        }
+        tNode.clearWaiting();
+        tNode.setLatch(null);
+        removeUnusedResource(waitingFor);
+    }
+
+    private void removeUnusedResource(UNode uNode) {
+        if (!uNode.hasWaiters() && !uNode.isHeld()) {
+            resources.remove(uNode.uid);
+        }
     }
 
     private void assignNextHolder(UNode uNode) {

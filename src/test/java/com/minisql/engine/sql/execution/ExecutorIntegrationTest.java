@@ -2,7 +2,7 @@ package com.minisql.engine.sql.execution;
 
 import com.minisql.engine.database.DatabaseManager;
 import com.minisql.engine.database.DatabaseContext;
-import com.minisql.engine.storage.wal.WriteAheadLogger;
+import com.minisql.engine.storage.wal.WriteAheadLogManager;
 import com.minisql.engine.storage.wal.LogRecord;
 import com.minisql.engine.storage.wal.LogRecordType;
 import com.minisql.engine.transaction.mvcc.VersionManager;
@@ -166,6 +166,94 @@ public class ExecutorIntegrationTest {
     }
 
     @Test
+    public void readCommitted_shouldRefreshReadViewForEachStatement()
+            throws Exception {
+        setupDatabase();
+        exec("create table stu (id int32 primary key, age int32);");
+
+        Executor reader = new Executor(dbm);
+        try {
+            reader.execute(
+                    ("use " + TEST_DB + ";")
+                            .getBytes(StandardCharsets.UTF_8)
+            );
+            reader.execute(
+                    "begin isolation level read committed;"
+                            .getBytes(StandardCharsets.UTF_8)
+            );
+
+            assertEquals(
+                    0,
+                    reader.execute(
+                            "select * from stu where id = 1;"
+                                    .getBytes(StandardCharsets.UTF_8)
+                    ).getResultRows()
+            );
+
+            exec("insert into stu (id, age) values (1, 20);");
+
+            assertEquals(
+                    1,
+                    reader.execute(
+                            "select * from stu where id = 1;"
+                                    .getBytes(StandardCharsets.UTF_8)
+                    ).getResultRows()
+            );
+            reader.execute("commit;".getBytes(StandardCharsets.UTF_8));
+        } finally {
+            reader.close();
+        }
+    }
+
+    @Test
+    public void repeatableRead_shouldReuseTransactionReadView()
+            throws Exception {
+        setupDatabase();
+        exec("create table stu (id int32 primary key, age int32);");
+
+        Executor reader = new Executor(dbm);
+        try {
+            reader.execute(
+                    ("use " + TEST_DB + ";")
+                            .getBytes(StandardCharsets.UTF_8)
+            );
+            reader.execute(
+                    "begin isolation level repeatable read;"
+                            .getBytes(StandardCharsets.UTF_8)
+            );
+
+            assertEquals(
+                    0,
+                    reader.execute(
+                            "select * from stu where id = 1;"
+                                    .getBytes(StandardCharsets.UTF_8)
+                    ).getResultRows()
+            );
+
+            exec("insert into stu (id, age) values (1, 20);");
+
+            assertEquals(
+                    0,
+                    reader.execute(
+                            "select * from stu where id = 1;"
+                                    .getBytes(StandardCharsets.UTF_8)
+                    ).getResultRows()
+            );
+            reader.execute("commit;".getBytes(StandardCharsets.UTF_8));
+
+            assertEquals(
+                    1,
+                    reader.execute(
+                            "select * from stu where id = 1;"
+                                    .getBytes(StandardCharsets.UTF_8)
+                    ).getResultRows()
+            );
+        } finally {
+            reader.close();
+        }
+    }
+
+    @Test
     public void readOnlyTransaction_shouldUseEphemeralXidAndRejectWrites() throws Exception {
         setupDatabase();
         DatabaseContext context = dbm.acquire(TEST_DB);
@@ -213,8 +301,8 @@ public class ExecutorIntegrationTest {
 
     private long countTransactionWalRecords(Path databaseBase) {
         long count = 0;
-        try (WriteAheadLogger walLogger = WriteAheadLogger.open(databaseBase.toString());
-             WriteAheadLogger.Reader reader = walLogger.getReader()) {
+        try (WriteAheadLogManager writeAheadLogManager = WriteAheadLogManager.open(databaseBase.toString());
+             WriteAheadLogManager.Reader reader = writeAheadLogManager.getReader()) {
             while (true) {
                 LogRecord record = reader.next();
                 if (record == null) {

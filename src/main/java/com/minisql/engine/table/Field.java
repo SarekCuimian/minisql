@@ -10,6 +10,7 @@ import com.minisql.engine.sql.ast.operator.CompareOperator;
 import com.minisql.engine.storage.codec.ByteReader;
 import com.minisql.engine.storage.codec.ByteWriter;
 import com.minisql.engine.transaction.xid.XidAllocator;
+import com.minisql.engine.transaction.mvcc.ReadView;
 import com.minisql.error.Panic;
 import com.minisql.error.Error;
 
@@ -37,7 +38,7 @@ public class Field {
     public static Field load(Table tb, long uid) {
         byte[] fieldBytes = null;
         try {
-            fieldBytes = tb.vm.read(XidAllocator.SYSTEM_XID, uid);
+            fieldBytes = tb.vm.readSystem(uid);
         } catch (Exception e) {
             Panic.of(e);
         }
@@ -147,7 +148,7 @@ public class Field {
         return fieldName;
     }
 
-    public void ensureUnique(long xid, Object value, Long selfUid) throws Exception {
+    public void ensureUnique(long xid, ReadView readView, Object value, Long selfUid) throws Exception {
         if(!unique) return;
         long key = toKey(value);
         List<Long> uids = tree.searchRange(key, key);
@@ -159,7 +160,7 @@ public class Field {
             if(selfUid != null && selfUid.equals(uid)) {
                 continue;
             }
-            byte[] recordBytes = tm.vm.read(xid, uid);
+            byte[] recordBytes = tm.vm.read(xid, readView, uid);
             if(recordBytes != null) {
                 throw Error.DuplicatedEntryException;
             }
