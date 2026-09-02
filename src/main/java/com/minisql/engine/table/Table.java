@@ -311,12 +311,9 @@ public class Table {
             if (f.isPrimary())
                 pkField = f;
         }
-        if (fd == null)
-            throw Error.FieldNotFoundException;
-        if (pkField == null)
-            throw Error.InvalidCommandException;
-        if (fd.isPrimary())
-            throw Error.PrimaryKeyNotUpdatableException;
+        if (fd == null) throw Error.FieldNotFoundException;
+        if (pkField == null) throw Error.InvalidCommandException;
+        if (fd.isPrimary()) throw Error.PrimaryKeyNotUpdatableException;
 
         // 3. 把字符串形式的新值转换成目标字段的类型
         Object value = fd.stringToValue(update.value);
@@ -351,8 +348,7 @@ public class Table {
                 // readForUpdate：读取并加锁
                 // 成功：返回该版本的 Record bytes。
                 // 失败(recordBytes==null)：该 uid 在当前事务 xid 视角不可见（可能被删除、被新版本覆盖或不可见）。
-                byte[] recordBytes =
-                        vm.readForUpdate(xid, readView, curUid);
+                byte[] recordBytes = vm.readForUpdate(xid, readView, curUid);
 
                 // 5.1 如果当前 uid 已不可见：尝试用主键值重定位最新版本并重试
                 if (recordBytes == null) {
