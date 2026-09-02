@@ -2,16 +2,17 @@
 
 MiniSQL 是一个基于 Java 的小型数据库项目，当前代码包含三部分入口：
 
-- `com.minisql.backend.Launcher`：数据库 TCP 服务端
+- `com.minisql.server.Launcher`：数据库 TCP 服务端
 - `com.minisql.client.Launcher`：交互式命令行客户端
 - `com.minisql.api.MiniSqlApplication`：基于 Spring Boot 的 HTTP API
 
 项目当前实现了以下核心能力：
 
-- WAL、崩溃恢复与事务状态持久化
-- 2PL 行锁、死锁检测与锁等待超时
-- MVCC
-- 两种事务隔离级别：`READ COMMITTED`、`REPEATABLE READ`
+- ARIES-style WAL 与崩溃恢复：page LSN、事务日志链、Analysis、Redo、CLR Undo 和 fuzzy checkpoint
+- 后台 PageCleaner、WAL-before-data 刷盘约束与 Dirty Page Table
+- XID 分配、事务状态持久化和运行期事务管理
+- MVCC ReadView，以及 `READ COMMITTED`、`REPEATABLE READ` 两种隔离级别
+- 基于 PageRecord UID 的严格 2PL 记录锁、死锁检测与锁等待超时
 - 显式事务与隐式事务
 - 基础 DDL / DML / 聚合查询
 - 基于 Socket 的数据库服务端与客户端
@@ -26,9 +27,16 @@ MiniSQL 是一个基于 Java 的小型数据库项目，当前代码包含三部
 
 ## 目录说明
 
-- `src/main/java/com/minisql/backend`：数据库内核与 TCP 服务端
+- `src/main/java/com/minisql/engine`：数据库内核
+- `src/main/java/com/minisql/engine/storage`：Page、Record、WAL 与恢复
+- `src/main/java/com/minisql/engine/transaction`：事务状态、MVCC 与锁管理
+- `src/main/java/com/minisql/server`：TCP 服务端
+- `src/main/java/com/minisql/transport`：客户端与服务端的网络协议
 - `src/main/java/com/minisql/client`：命令行客户端
 - `src/main/java/com/minisql/api`：Spring Boot API
+- `docs/architecture`：当前已实现架构
+- `docs/design`：存储、WAL 与 Recovery 的目标设计和实施记录
+- `openspec/changes`：可独立验收的设计变更
 - `scripts/restart.sh`：一键重启后端并启动客户端
 - `scripts/start-client.sh`：在后端已启动时打开客户端
 
@@ -40,12 +48,18 @@ MiniSQL 是一个基于 Java 的小型数据库项目，当前代码包含三部
 mvn clean compile
 ```
 
+运行测试：
+
+```bash
+mvn test
+```
+
 ### 2. 初始化数据目录
 
 下面命令会在指定目录创建数据库根目录，并自动创建默认库：
 
 ```bash
-mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" -Dexec.args="-create /tmp/minisql"
+mvn exec:java -Dexec.mainClass="com.minisql.server.Launcher" -Dexec.args="-create /tmp/minisql"
 ```
 
 ### 3. 启动数据库服务端
@@ -53,7 +67,7 @@ mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" -Dexec.args="-crea
 服务端固定监听 `9999` 端口：
 
 ```bash
-mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" -Dexec.args="-open /tmp/minisql"
+mvn exec:java -Dexec.mainClass="com.minisql.server.Launcher" -Dexec.args="-open /tmp/minisql"
 ```
 
 也可以直接使用脚本：
@@ -110,19 +124,42 @@ rollback;
 ## 示例 SQL
 
 ```sql
-create database db1;
-use db1;
+show databases;
+create database shop;
+use shop;
 
-create table user id int32, age int32 (index id);
-insert into user values 1 10;
-insert into user values 2 20;
-select * from user;
+create table users (
+    id int64 primary key,
+    name string unique,
+    age int32
+);
 
-begin isolation level repeatable read;
-update user set age = 30 where id = 1;
+show tables;
+describe users;
+
+insert into users (id, name, age) values (1, 'Alice', 20);
+insert into users (id, name, age) values (2, 'Bob', 25);
+insert into users (id, name, age) values (3, 'Carol', 20);
+
+select * from users;
+select id, name from users where age >= 20;
+select age, count(*) as total
+from users
+group by age
+having total >= 2;
+
+begin isolation level read committed;
+update users set age = 26 where id = 2;
 commit;
 
-drop database db1;
+begin isolation level repeatable read;
+delete from users where id = 3;
+rollback;
+
+select * from users where id = 3;
+
+drop table users;
+drop database shop;
 ```
 
 ## HTTP API
@@ -155,6 +192,40 @@ curl -X POST http://127.0.0.1:9906/api/sessions/{sessionId}/sql \
   -d '{"sql":"show databases;","format":"TEXT"}'
 ```
 
+## 存储与恢复
+
+MiniSQL 使用 Write-Ahead Logging 保证事务修改能够在崩溃后恢复。Page Header
+持久化 page LSN，Redo 根据 page LSN 判断日志是否需要重放。每个更新事务维护
+`BEGIN → UPDATE/INSERT → COMMIT/ABORT → END` 日志链。
+
+恢复过程包含 Analysis、repeat-history Redo 和 Undo。Analysis 从最近一次完整
+checkpoint 开始重建 Dirty Page Table 与 Active Transaction Table；Undo 使用
+CLR 和 `undoNextLsn` 记录补偿操作，因此恢复过程中再次崩溃后仍可继续。
+
+运行时的核心写入顺序：
+
+```text
+生成 PageRecord 修改及 before/after image
+        ↓
+追加 WAL
+        ↓
+修改缓存页、更新 Page LSN，并登记 Dirty Page Table
+        ↓
+PageCleaner 刷 WAL
+        ↓
+PageCleaner 写数据页
+```
+
+`DatabaseContext` 负责组装和关闭单个数据库的 XID、WAL、BufferPool、
+Checkpoint、PageRecord、MVCC 与 Table 组件。数据库正常关闭时会停止后台任务、
+刷出脏页、记录最终 checkpoint，再关闭 WAL 和 XID 文件。
+
+详细设计：
+
+- [WAL 与 Recovery 设计](docs/design/wal-recovery.md)
+- [WAL Record 持久化格式](docs/design/wal-record-format.md)
+- [当前架构文档](docs/architecture/README.md)
+
 ## 正常关闭
 
 建议按下面顺序关闭：
@@ -167,6 +238,15 @@ curl -X POST http://127.0.0.1:9906/api/sessions/{sessionId}/sql \
 如果只想关闭某个数据目录对应的数据库资源，可以执行：
 
 ```bash
-mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" -Dexec.args="-shutdown /tmp/minisql"
+mvn exec:java -Dexec.mainClass="com.minisql.server.Launcher" -Dexec.args="-shutdown /tmp/minisql"
 ```
 
+## 当前边界
+
+- `jps` 默认只显示短类名，所以服务端和客户端都会显示为 `Launcher`
+- 想区分具体进程时，建议使用 `jps -lv`
+- Checkpoint 当前每 30 秒调度一次，正常关闭时还会记录最终 checkpoint
+- WAL 当前仍是单文件，不进行 segment 切分和历史日志回收
+- 当前只追加新 Page，不回收或重用已经释放的 Page
+- 记录锁以 PageRecord UID 为资源，不包含 MySQL 风格的 gap lock 或 next-key lock
+- 未提交事务会在恢复时被 Analysis/Redo/Undo 流程回滚

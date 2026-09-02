@@ -9,9 +9,9 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import com.minisql.api.entity.response.SessionCreateResponse;
-import com.minisql.api.entity.request.SqlExecRequest;
-import com.minisql.api.entity.response.SqlExecResponse;
+import com.minisql.api.dto.response.SessionCreateResponse;
+import com.minisql.api.dto.request.SqlExecutionRequest;
+import com.minisql.api.dto.response.SqlExecutionResponse;
 import com.minisql.api.service.SqlService;
 import com.minisql.api.exception.SessionNotFoundException;
 import com.minisql.api.session.SessionManager;
@@ -43,15 +43,14 @@ public class SessionController {
     }
 
     @PostMapping("/{sessionId}/sql")
-    public ResponseEntity<SqlExecResponse<?>> executeWithSession(@PathVariable String sessionId,
-                                                                 @Valid @RequestBody SqlExecRequest request) {
+    public ResponseEntity<SqlExecutionResponse<?>> executeWithSession(@PathVariable String sessionId,
+                                                                      @Valid @RequestBody SqlExecutionRequest request) {
         try {
-            // boolean text = request.getFormat() == null || request.getFormat().isText();
-            SqlExecResponse<?> response = sqlService.executeWithSession(sessionId, request.getSql(), request.getFormat());
+            SqlExecutionResponse<?> response = sqlService.executeWithSession(sessionId, request.getSql(), request.getFormat());
             return ResponseEntity.ok(response);
         } catch (SessionNotFoundException ex) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(SqlExecResponse.failure(ex.getMessage()));
+                .body(SqlExecutionResponse.failure(ex.getMessage()));
         }
     }
 

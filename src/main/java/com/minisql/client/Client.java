@@ -1,25 +1,25 @@
 package com.minisql.client;
 
-import com.minisql.common.ExecResult;
-import com.minisql.common.ExecResultEncoder;
-import com.minisql.transport.Package;
-import com.minisql.transport.Packager;
+import com.minisql.result.ExecutionResult;
+import com.minisql.result.ExecutionResultCodec;
+import com.minisql.transport.Packet;
+import com.minisql.transport.PacketChannel;
 
 public class Client {
     private final RoundTripper rt;
 
-    public Client(Packager packager) {
-        this.rt = new RoundTripper(packager);
+    public Client(PacketChannel packetChannel) {
+        this.rt = new RoundTripper(packetChannel);
     }
 
-    public ExecResult execute(byte[] stat) throws Exception {
-        Package pkg = new Package(stat, null);
-        Package respkg = rt.roundTrip(pkg);
-        if(respkg.getExc() != null) {
-            throw respkg.getExc();
+    public ExecutionResult execute(byte[] stat) throws Exception {
+        Packet requestPacket = Packet.data(stat);
+        Packet responsePacket = rt.roundTrip(requestPacket);
+        if(!responsePacket.isSuccess()) {
+            throw responsePacket.getError();
         }
-        // 传输层收到的 payload，再经结果序列化层解码为 ExecResult
-        return ExecResultEncoder.decode(respkg.getData());
+        // 传输层收到的 payload，再经结果序列化层解码为 ExecutionResult
+        return ExecutionResultCodec.decode(responsePacket.getPayload());
     }
 
     public void close() {

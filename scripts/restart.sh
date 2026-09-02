@@ -20,7 +20,7 @@ trap cleanup EXIT
 ensure_database() {
     if [[ ! -d "${DB_PATH}" ]]; then
         echo "[INFO] Database directory ${DB_PATH} not found, creating..."
-        mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" \
+        mvn exec:java -Dexec.mainClass="com.minisql.server.Launcher" \
             -Dexec.args="-create ${DB_PATH}"
         return
     fi
@@ -28,7 +28,7 @@ ensure_database() {
     # 如果目录存在但没有任何 .xid（没有数据库），则创建默认库
     if ! find "${DB_PATH}" -maxdepth 1 -name "*.xid" -print -quit >/dev/null; then
         echo "[INFO] No databases found under ${DB_PATH}, creating default..."
-        mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" \
+        mvn exec:java -Dexec.mainClass="com.minisql.server.Launcher" \
             -Dexec.args="-create ${DB_PATH}"
     fi
 }
@@ -65,7 +65,7 @@ mvn clean compile
 ensure_database
 
 echo "[INFO] Starting backend on ${DB_PATH} (log: ${LOG_FILE})..."
-mvn exec:java -Dexec.mainClass="com.minisql.backend.Launcher" \
+mvn exec:java -Dexec.mainClass="com.minisql.server.Launcher" \
     -Dexec.args="-open ${DB_PATH}" >"${LOG_FILE}" 2>&1 &
 SERVER_PID=$!
 echo "${SERVER_PID}" > backend.pid

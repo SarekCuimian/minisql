@@ -11,9 +11,8 @@ import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
-import com.minisql.common.ConsoleResultFormatter;
-import com.minisql.common.ExecResult;
-import com.minisql.common.ResultFormatter;
+import com.minisql.result.format.ConsoleResultFormatter;
+import com.minisql.result.ExecutionResult;
 
 public class Shell {
     private static final String ANSI_RESET = "\u001B[0m";
@@ -21,7 +20,8 @@ public class Shell {
     private static final String PROMPT = ANSI_CYAN + "sql> " + ANSI_RESET;
     private static final String CONT_PROMPT = ANSI_CYAN + "  -> " + ANSI_RESET;
     private final Client client;
-    private final ResultFormatter formatter = new ConsoleResultFormatter();
+    private final ConsoleResultFormatter formatter =
+            new ConsoleResultFormatter();
 
     public Shell(Client client) {
         this.client = client;
@@ -72,7 +72,7 @@ public class Shell {
                             break;
                         }
                         try {
-                            ExecResult res = client.execute(sql.getBytes());
+                            ExecutionResult res = client.execute(sql.getBytes());
                             byte[] formatted = formatter.format(res);
                             System.out.println(new String(formatted, StandardCharsets.UTF_8));
                             System.out.println();
